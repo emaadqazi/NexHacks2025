@@ -4,4 +4,3 @@
  */
 
 export { HomeScreen } from './HomeScreen';
-export { MappingScreen } from './MappingScreen';
