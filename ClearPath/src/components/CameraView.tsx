@@ -3,7 +3,7 @@
  * Displays the live camera feed for object detection
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useEffect } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { CameraView as ExpoCameraView, useCameraPermissions } from 'expo-camera';
 
@@ -41,7 +41,7 @@ export const CameraView: React.FC<CameraViewProps> = ({ onObjectDetected }) => {
 
   return (
     <View style={styles.container}>
-      <ExpoCameraView style={styles.camera} facing="back">
+      <ExpoCameraView style={styles.camera}>
         <View style={styles.overlay}>
           <Text style={styles.overlayText}>Camera Ready</Text>
           <Text style={styles.overlaySubtext}>
