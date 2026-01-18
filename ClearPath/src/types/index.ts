@@ -76,3 +76,11 @@ export interface Connection {
   distance: number; // Distance in meters
   accessible?: boolean; // Whether connection is wheelchair accessible
 }
+
+// Parsed location from speech input
+export interface ParsedLocation {
+  building: string;
+  floor: number;
+  currentRoom: string;
+  destinationRoom: string;
+}

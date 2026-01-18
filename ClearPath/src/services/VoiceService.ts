@@ -1,34 +1,115 @@
 /**
- * TEAM MEMBER 2: LiveKit integration - voice commands, text-to-speech guidance
+ * TEAM MEMBER 2: Voice input recognition using expo-av and Wispr Flow
  * 
  * This service handles all voice-related functionality including:
- * - Voice input recognition
+ * - Voice input recognition via audio recording
+ * - Wispr Flow integration for speech-to-text transcription
  * - Text-to-speech output
- * - LiveKit integration for real-time voice processing
  * - Voice command parsing
  */
 
+import { Audio } from 'expo-av';
+import WisprFlowService, { ParsedLocation } from './WisprFlowService';
+
 export class VoiceService {
   private isListening: boolean = false;
+  private recording: Audio.Recording | null = null;
 
   /**
-   * Initialize LiveKit connection and start listening for voice input
-   * TODO: Set up LiveKit client connection
-   * TODO: Configure voice recognition
+   * Request microphone permissions and start recording audio
+   * Uses expo-av for audio recording
    */
   async startListening(): Promise<void> {
-    console.log('Starting voice listening...');
-    this.isListening = true;
-    // Implementation needed by Team Member 2
+    try {
+      console.log('Starting voice recording...');
+      
+      // Request microphone permission
+      const { status } = await Audio.requestPermissionsAsync();
+      if (status !== 'granted') {
+        throw new Error('Microphone permission not granted');
+      }
+
+      // Configure audio mode for recording
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+        staysActiveInBackground: false,
+      });
+
+      // Start recording
+      const { recording } = await Audio.Recording.createAsync(
+        Audio.RecordingOptionsPresets.HIGH_QUALITY
+      );
+
+      this.recording = recording;
+      this.isListening = true;
+      console.log('Recording started successfully');
+      
+    } catch (error) {
+      console.error('Error starting recording:', error);
+      this.isListening = false;
+      throw error;
+    }
   }
 
   /**
-   * Stop listening for voice input
+   * Stop recording and return the audio file URI
+   * 
+   * @returns Promise<string> - URI of the recorded audio file
    */
-  async stopListening(): Promise<void> {
-    console.log('Stopping voice listening...');
-    this.isListening = false;
-    // Implementation needed by Team Member 2
+  async stopListening(): Promise<string> {
+    try {
+      if (!this.recording) {
+        throw new Error('No active recording');
+      }
+
+      console.log('Stopping recording...');
+      
+      // Stop and unload the recording
+      await this.recording.stopAndUnloadAsync();
+      const uri = this.recording.getURI();
+      
+      this.recording = null;
+      this.isListening = false;
+
+      if (!uri) {
+        throw new Error('Recording URI is null');
+      }
+
+      console.log('Recording stopped. Audio URI:', uri);
+      return uri;
+      
+    } catch (error) {
+      console.error('Error stopping recording:', error);
+      this.isListening = false;
+      throw error;
+    }
+  }
+
+  /**
+   * Record speech, transcribe it using Wispr Flow, and parse into structured location
+   * This is the main method to capture user speech and extract location/destination info
+   * 
+   * @returns Promise<ParsedLocation> - Structured location data parsed from speech
+   */
+  async captureAndParseLocation(): Promise<ParsedLocation> {
+    try {
+      // Start recording
+      await this.startListening();
+      
+      // Wait a moment for user to speak (or implement a manual stop)
+      // For MVP, we'll assume stopListening() is called manually
+      const audioUri = await this.stopListening();
+      
+      // Transcribe and parse using Wispr Flow
+      const parsedLocation = await WisprFlowService.transcribeAndParse(audioUri);
+      
+      return parsedLocation;
+      
+    } catch (error) {
+      console.error('Error in captureAndParseLocation:', error);
+      throw error;
+    }
   }
 
   /**

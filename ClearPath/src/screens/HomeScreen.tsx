@@ -2,15 +2,17 @@
  * TEAM MEMBER 4: UI/UX - camera view, voice controls, testing
  * 
  * Home Screen - Main navigation interface
- * Landing page with camera functionality
+ * Landing page with camera functionality and speech input flow
  */
 
 import React, { useState } from 'react';
 import { View, StyleSheet, Text, TouchableOpacity } from 'react-native';
 import { CameraView as ExpoCameraView, useCameraPermissions } from 'expo-camera';
+import { SpeechInputScreen } from './SpeechInputScreen';
+import { ParsedLocation } from '../types';
 
 // Landing Page Component
-const LandingPage: React.FC<{ onStart: () => void }> = ({ onStart }) => {
+const LandingPage: React.FC<{ onStart: () => void; onCamera: () => void }> = ({ onStart, onCamera }) => {
   return (
     <View style={styles.landingContainer}>
       {/* Background gradient effect */}
@@ -39,10 +41,15 @@ const LandingPage: React.FC<{ onStart: () => void }> = ({ onStart }) => {
         </View>
       </View>
 
-      {/* Start Button */}
-      <TouchableOpacity style={styles.startButton} onPress={onStart}>
-        <Text style={styles.startButtonText}>Click Me</Text>
-      </TouchableOpacity>
+      {/* Buttons Row */}
+      <View style={styles.buttonsRow}>
+        <TouchableOpacity style={styles.startButton} onPress={onStart}>
+          <Text style={styles.startButtonText}>Click Me</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.cameraButton} onPress={onCamera}>
+          <Text style={styles.cameraButtonText}>📷 Camera</Text>
+        </TouchableOpacity>
+      </View>
 
       <Text style={styles.footer}>NexHacks 2025</Text>
     </View>
@@ -113,12 +120,50 @@ const CameraScreen: React.FC<{ onBack: () => void }> = ({ onBack }) => {
 // Main HomeScreen Component
 export const HomeScreen: React.FC = () => {
   const [showCamera, setShowCamera] = useState(false);
+  const [showSpeechInput, setShowSpeechInput] = useState(false);
+  const [parsedLocation, setParsedLocation] = useState<ParsedLocation | null>(null);
 
-  if (showCamera) {
-    return <CameraScreen onBack={() => setShowCamera(false)} />;
+  // Handle speech input completion - proceed to camera view
+  const handleSpeechInputComplete = (location: ParsedLocation) => {
+    setParsedLocation(location);
+    setShowSpeechInput(false);
+    setShowCamera(true);
+    console.log('Speech input completed. Location:', location);
+  };
+
+  // Show speech input screen first (before camera)
+  if (showSpeechInput) {
+    return (
+      <SpeechInputScreen
+        onComplete={handleSpeechInputComplete}
+        onBack={() => setShowSpeechInput(false)}
+      />
+    );
   }
 
-  return <LandingPage onStart={() => setShowCamera(true)} />;
+  // Show camera screen (either after speech input or directly from landing)
+  if (showCamera) {
+    return (
+      <CameraScreen
+        onBack={() => {
+          setShowCamera(false);
+          // If we came from speech input (have a parsed location), go back there
+          // Otherwise go back to landing page
+          if (parsedLocation) {
+            setShowSpeechInput(true);
+          }
+        }}
+      />
+    );
+  }
+
+  // Landing page - user clicks "Click Me" to begin with speech input, or "Camera" to go directly to camera
+  return (
+    <LandingPage 
+      onStart={() => setShowSpeechInput(true)} 
+      onCamera={() => setShowCamera(true)}
+    />
+  );
 };
 
 const styles = StyleSheet.create({
@@ -173,10 +218,14 @@ const styles = StyleSheet.create({
     color: '#ccc',
     fontSize: 16,
   },
+  buttonsRow: {
+    flexDirection: 'row',
+    gap: 15,
+  },
   startButton: {
     backgroundColor: '#4A90D9',
     paddingVertical: 18,
-    paddingHorizontal: 60,
+    paddingHorizontal: 35,
     borderRadius: 30,
     shadowColor: '#4A90D9',
     shadowOffset: { width: 0, height: 4 },
@@ -186,7 +235,23 @@ const styles = StyleSheet.create({
   },
   startButtonText: {
     color: '#fff',
-    fontSize: 22,
+    fontSize: 18,
+    letterSpacing: 1,
+  },
+  cameraButton: {
+    backgroundColor: '#2ECC71',
+    paddingVertical: 18,
+    paddingHorizontal: 35,
+    borderRadius: 30,
+    shadowColor: '#2ECC71',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 10,
+    elevation: 8,
+  },
+  cameraButtonText: {
+    color: '#fff',
+    fontSize: 18,
     letterSpacing: 1,
   },
   footer: {
