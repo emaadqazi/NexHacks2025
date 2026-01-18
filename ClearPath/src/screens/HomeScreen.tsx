@@ -53,22 +53,197 @@ const VideoPreview = ({ mediaStream }: { mediaStream: MediaStream | null }) => {
   );
 };
 
+// Typewriter component that types out text letter by letter
+const TypewriterText = ({ 
+  text, 
+  delay = 0, 
+  speed = 80, 
+  onComplete,
+  style,
+}: { 
+  text: string; 
+  delay?: number; 
+  speed?: number; 
+  onComplete?: () => void;
+  style?: any;
+}) => {
+  const [displayedText, setDisplayedText] = useState("");
+  const [started, setStarted] = useState(false);
+
+  useEffect(() => {
+    const startTimer = setTimeout(() => {
+      setStarted(true);
+    }, delay);
+    return () => clearTimeout(startTimer);
+  }, [delay]);
+
+  useEffect(() => {
+    if (!started) return;
+
+    if (displayedText.length < text.length) {
+      const timer = setTimeout(() => {
+        setDisplayedText(text.slice(0, displayedText.length + 1));
+      }, speed);
+      return () => clearTimeout(timer);
+    } else if (onComplete) {
+      onComplete();
+    }
+  }, [started, displayedText, text, speed, onComplete]);
+
+  return <Text style={style}>{displayedText}</Text>;
+};
+
+// Voice options
+const voices = ["Mark", "Sarah", "James", "Emily"];
+
 // Landing Page Component
 const LandingPage = ({ onStart }: { onStart: () => void }) => {
+  const [line1Complete, setLine1Complete] = useState(false);
+  const [line2Complete, setLine2Complete] = useState(false);
+  const [line3Complete, setLine3Complete] = useState(false);
+  const [uiVisible, setUiVisible] = useState(false);
+  const [showCursor, setShowCursor] = useState(true);
+  const [currentVoiceIndex, setCurrentVoiceIndex] = useState(0);
+  const [uiOpacity] = useState(new (require('react-native').Animated).Value(0));
+
+  const cycleVoice = () => {
+    setCurrentVoiceIndex((prev) => (prev + 1) % voices.length);
+  };
+
+  useEffect(() => {
+    if (line3Complete) {
+      // Hide cursor after typing is done
+      const cursorTimer = setTimeout(() => {
+        setShowCursor(false);
+      }, 1000);
+
+      // Show UI after typing completes
+      const uiTimer = setTimeout(() => {
+        setUiVisible(true);
+        require('react-native').Animated.timing(uiOpacity, {
+          toValue: 1,
+          duration: 1000,
+          useNativeDriver: true,
+        }).start();
+      }, 800);
+
+      return () => {
+        clearTimeout(cursorTimer);
+        clearTimeout(uiTimer);
+      };
+    }
+  }, [line3Complete]);
+
+  const Animated = require('react-native').Animated;
+
   return (
     <View style={styles.landingContainer}>
-      <View style={styles.logoContainer}>
-        <Text style={styles.logoIcon}>🧭</Text>
-        <Text style={styles.title}>ClearPath</Text>
-        <Text style={styles.tagline}>Indoor Navigation</Text>
+      {/* Subtle vignette effect */}
+      <View style={styles.vignette} />
+
+      {/* Header - fades in after title */}
+      <Animated.View style={[styles.headerLogo, { opacity: uiOpacity }]}>
+        <View style={styles.logoIconBox}>
+          <Text style={styles.logoIconArrow}>▶</Text>
+        </View>
+        <Text style={styles.logoText}>CLEARPATH</Text>
+      </Animated.View>
+
+      {/* Main content */}
+      <View style={styles.mainContent}>
+        {/* ClearPath title with typewriter */}
+        <TypewriterText 
+          text="CLEARPATH" 
+          delay={500} 
+          speed={100}
+          onComplete={() => setLine1Complete(true)}
+          style={styles.brandText}
+        />
+        
+        {/* Indoor Navigation */}
+        {line1Complete && (
+          <TypewriterText 
+            text="Indoor Navigation" 
+            delay={200} 
+            speed={60}
+            onComplete={() => setLine2Complete(true)}
+            style={styles.titleText}
+          />
+        )}
+        {!line1Complete && <Text style={styles.titleText}> </Text>}
+        
+        {/* for Everyone with cursor */}
+        <View style={styles.subtitleRow}>
+          {line2Complete && (
+            <TypewriterText 
+              text="for Everyone" 
+              delay={200} 
+              speed={70}
+              onComplete={() => setLine3Complete(true)}
+              style={styles.subtitleText}
+            />
+          )}
+          {!line2Complete && <Text style={styles.subtitleText}> </Text>}
+          
+          {/* Blinking cursor */}
+          {showCursor && line2Complete && (
+            <BlinkingCursor />
+          )}
+        </View>
+
+        {/* Tagline - fades in with UI */}
+        <Animated.View style={{ opacity: uiOpacity, marginTop: 32 }}>
+          <Text style={styles.taglineText}>
+            AI-POWERED  •  VOICE-GUIDED  •  ACCESSIBLE
+          </Text>
+        </Animated.View>
+
+        {/* Description - fades in with UI */}
+        <Animated.View style={{ opacity: uiOpacity, marginTop: 24 }}>
+          <Text style={styles.descriptionText}>
+            Empowering blind and visually impaired individuals to navigate indoor spaces with confidence using AI-powered voice guidance.
+          </Text>
+        </Animated.View>
+
+        {/* Buttons - fade in with UI */}
+        <Animated.View style={[styles.buttonsRow, { opacity: uiOpacity }]}>
+          <TouchableOpacity style={styles.getStartedButton} onPress={onStart} activeOpacity={0.8}>
+            <Text style={styles.getStartedText}>GET STARTED</Text>
+            <Text style={styles.getStartedArrow}>→</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity 
+            style={styles.voiceButton} 
+            onPress={cycleVoice}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.voiceButtonIcon}>🎤</Text>
+            <Text style={styles.voiceButtonText}>VOICE: {voices[currentVoiceIndex].toUpperCase()}</Text>
+          </TouchableOpacity>
+        </Animated.View>
       </View>
 
-      <TouchableOpacity style={styles.startButton} onPress={onStart}>
-        <Text style={styles.startButtonText}>Start</Text>
-      </TouchableOpacity>
-
-      <Text style={styles.footer}>NexHacks 2025</Text>
+      {/* Footer text - fades in last */}
+      <Animated.View style={[styles.footerContainer, { opacity: uiOpacity }]}>
+        <Text style={styles.footer}>BUILT AT NEXHACKS 2025</Text>
+      </Animated.View>
     </View>
+  );
+};
+
+// Blinking cursor component
+const BlinkingCursor = () => {
+  const [visible, setVisible] = useState(true);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setVisible(v => !v);
+    }, 500);
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <Text style={[styles.cursor, { opacity: visible ? 1 : 0 }]}>|</Text>
   );
 };
 
@@ -356,48 +531,158 @@ const styles = StyleSheet.create({
   landingContainer: {
     flex: 1,
     backgroundColor: '#000',
+    paddingHorizontal: 24,
+    paddingTop: 20,
+    paddingBottom: 32,
+  },
+  vignette: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'transparent',
+  },
+  headerLogo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingTop: 20,
+    zIndex: 10,
+  },
+  logoIconBox: {
+    width: 40,
+    height: 40,
+    backgroundColor: '#fff',
+    borderRadius: 10,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 40,
   },
-  logoContainer: {
-    alignItems: 'center',
-    marginBottom: 80,
-  },
-  logoIcon: {
-    fontSize: 72,
-    marginBottom: 20,
-  },
-  title: {
-    fontSize: 42,
-    color: '#fff',
-    fontWeight: '200',
-    letterSpacing: 4,
-  },
-  tagline: {
-    fontSize: 16,
-    color: '#666',
-    marginTop: 12,
-    letterSpacing: 2,
-  },
-  startButton: {
-    backgroundColor: '#fff',
-    paddingVertical: 20,
-    paddingHorizontal: 80,
-    borderRadius: 50,
-  },
-  startButtonText: {
+  logoIconArrow: {
     color: '#000',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  logoText: {
+    color: '#fff',
     fontSize: 20,
-    fontWeight: '600',
+    fontWeight: '300',
+    letterSpacing: 8,
+  },
+  mainContent: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingBottom: 60,
+  },
+  brandText: {
+    color: '#fff',
+    fontSize: 24,
+    fontWeight: '300',
+    letterSpacing: 16,
+    marginBottom: 24,
+    textAlign: 'center',
+  },
+  titleText: {
+    color: '#fff',
+    fontSize: 48,
+    fontWeight: '200',
+    letterSpacing: -1,
+    textAlign: 'center',
+    minHeight: 60,
+  },
+  subtitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 8,
+  },
+  subtitleText: {
+    color: '#666',
+    fontSize: 40,
+    fontWeight: '200',
+    letterSpacing: -1,
+    textAlign: 'center',
+  },
+  cursor: {
+    color: '#666',
+    fontSize: 40,
+    fontWeight: '200',
+    marginLeft: 2,
+  },
+  taglineText: {
+    color: '#666',
+    fontSize: 12,
+    letterSpacing: 4,
+    textAlign: 'center',
+  },
+  descriptionText: {
+    color: '#888',
+    fontSize: 18,
+    fontWeight: '300',
+    lineHeight: 28,
+    textAlign: 'center',
+    maxWidth: 500,
+    paddingHorizontal: 20,
+  },
+  buttonsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 16,
+    flexWrap: 'wrap',
+    marginTop: 48,
+  },
+  getStartedButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: '#fff',
+    paddingVertical: 18,
+    paddingHorizontal: 40,
+    minWidth: 220,
+    justifyContent: 'center',
+  },
+  getStartedText: {
+    color: '#000',
+    fontSize: 14,
+    fontWeight: '400',
     letterSpacing: 2,
+  },
+  getStartedArrow: {
+    color: '#000',
+    fontSize: 18,
+    fontWeight: '300',
+  },
+  voiceButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: 'transparent',
+    paddingVertical: 18,
+    paddingHorizontal: 40,
+    minWidth: 220,
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#333',
+  },
+  voiceButtonIcon: {
+    fontSize: 16,
+  },
+  voiceButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '400',
+    letterSpacing: 2,
+  },
+  footerContainer: {
+    alignItems: 'center',
+    paddingBottom: 8,
   },
   footer: {
-    position: 'absolute',
-    bottom: 50,
-    color: '#333',
-    fontSize: 12,
-    letterSpacing: 1,
+    color: '#444',
+    fontSize: 11,
+    letterSpacing: 4,
   },
 
   // Navigation Screen
