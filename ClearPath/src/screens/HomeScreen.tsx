@@ -1,16 +1,20 @@
 /**
  * ClearPath - Indoor Navigation for Everyone
  * 
- * Web-only implementation using Overshoot SDK
- * Clean, minimal UI optimized for iPhone
+ * Web-only implementation using Overshoot SDK + ElevenLabs TTS + WisprFlow STT
  */
 
 import React, { useState, useRef, useEffect } from 'react';
 import { View, StyleSheet, Text, TouchableOpacity, Platform } from 'react-native';
 import OvershootService, { DetectionResponse } from '../services/OvershootService';
+import ElevenLabsService from '../services/ElevenLabsTTS';
+import WisprFlowService from '../services/WisprFlow';
+
+// Throttle config
+const SPEECH_INTERVAL_MS = 4000; // 2 seconds between announcements
 
 // Video element for displaying camera stream
-const VideoPreview: React.FC<{ mediaStream: MediaStream | null }> = ({ mediaStream }) => {
+const VideoPreview = ({ mediaStream }: { mediaStream: MediaStream | null }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
@@ -46,7 +50,7 @@ const VideoPreview: React.FC<{ mediaStream: MediaStream | null }> = ({ mediaStre
 };
 
 // Landing Page Component
-const LandingPage: React.FC<{ onStart: () => void }> = ({ onStart }) => {
+const LandingPage = ({ onStart }: { onStart: () => void }) => {
   return (
     <View style={styles.landingContainer}>
       <View style={styles.logoContainer}>
@@ -64,13 +68,22 @@ const LandingPage: React.FC<{ onStart: () => void }> = ({ onStart }) => {
   );
 };
 
-// Camera/Detection Screen Component - Clean Minimal Design
-const CameraScreen: React.FC<{ onBack: () => void }> = ({ onBack }) => {
+// Camera/Detection Screen Component
+const CameraScreen = ({ onBack }: { onBack: () => void }) => {
   const [isStreaming, setIsStreaming] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [results, setResults] = useState<DetectionResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [mediaStream, setMediaStream] = useState<MediaStream | null>(null);
+  const [autoSpeak, setAutoSpeak] = useState(true);
+  
+  // Voice command state
+  const [isListening, setIsListening] = useState(false);
+  const [userCommand, setUserCommand] = useState<string | null>(null);
+  
+  // Throttle tracking
+  const lastSpokenTimeRef = useRef<number>(0);
+  const lastSpokenTextRef = useRef<string>('');
 
   // Cleanup on unmount
   useEffect(() => {
@@ -78,19 +91,27 @@ const CameraScreen: React.FC<{ onBack: () => void }> = ({ onBack }) => {
       if (isStreaming) {
         OvershootService.stopStreaming();
       }
+      ElevenLabsService.stop();
+      WisprFlowService.cancelRecording();
     };
   }, [isStreaming]);
 
-  // Start streaming
+  // Start streaming with welcome message
   const handleStart = async () => {
     if (!OvershootService.hasApiKey()) {
-      setError('API key not configured');
+      setError('Overshoot API key not configured');
       return;
     }
 
     setIsLoading(true);
     setError(null);
     setResults(null);
+
+    // Welcome message - wait for it to finish
+    await ElevenLabsService.speak("Welcome to ClearPath. Starting navigation. Hold your phone at chest level with camera facing forward. Tap the microphone to ask for directions.");
+
+    // Small delay to ensure welcome finishes
+    await new Promise(resolve => setTimeout(resolve, 500));
 
     console.log('[CameraScreen] Starting Overshoot...');
 
@@ -100,8 +121,23 @@ const CameraScreen: React.FC<{ onBack: () => void }> = ({ onBack }) => {
 
       if (!result.success && result.error) {
         setError(result.error);
-      } else {
-        setError(null);
+        return;
+      }
+
+      setError(null);
+
+      // Auto-speak with throttling
+      if (autoSpeak && result.rawResult) {
+        const now = Date.now();
+        const timeSinceLast = now - lastSpokenTimeRef.current;
+        const isDifferentText = result.rawResult !== lastSpokenTextRef.current;
+
+        // Only speak if: enough time passed AND text is different AND not currently speaking
+        if (timeSinceLast >= SPEECH_INTERVAL_MS && isDifferentText && !ElevenLabsService.isCurrentlySpeaking()) {
+          lastSpokenTimeRef.current = now;
+          lastSpokenTextRef.current = result.rawResult;
+          ElevenLabsService.speak(result.rawResult);
+        }
       }
     });
 
@@ -109,6 +145,8 @@ const CameraScreen: React.FC<{ onBack: () => void }> = ({ onBack }) => {
       setIsStreaming(true);
       const stream = OvershootService.getMediaStream();
       setMediaStream(stream);
+    } else {
+      setError('Failed to start camera');
     }
 
     setIsLoading(false);
@@ -117,22 +155,112 @@ const CameraScreen: React.FC<{ onBack: () => void }> = ({ onBack }) => {
   // Stop streaming
   const handleStop = async () => {
     await OvershootService.stopStreaming();
+    ElevenLabsService.stop();
+    
+    // Goodbye message
+    await ElevenLabsService.speak("Navigation stopped.");
+    
     setIsStreaming(false);
     setMediaStream(null);
   };
 
-  // Speak results
+  // Manual speak button
   const handleSpeak = () => {
     if (!results?.rawResult) return;
+    ElevenLabsService.speak(results.rawResult);
+  };
 
-    const text = results.rawResult;
-    console.log('[Voice]', text);
+  // Handle back with cleanup
+  const handleBack = () => {
+    if (isStreaming) {
+      OvershootService.stopStreaming();
+      ElevenLabsService.stop();
+    }
+    WisprFlowService.cancelRecording();
+    onBack();
+  };
 
-    if (Platform.OS === 'web' && 'speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = 0.9;
-      window.speechSynthesis.speak(utterance);
+  // Handle voice command recording
+  const handleMicPress = async () => {
+    if (isListening) {
+      // Stop recording and process command
+      setIsListening(false);
+      const command = await WisprFlowService.stopRecordingAndTranscribe();
+      
+      if (command) {
+        setUserCommand(command);
+        await processVoiceCommand(command);
+      }
+    } else {
+      // Start recording
+      const started = await WisprFlowService.startRecording();
+      if (started) {
+        setIsListening(true);
+        // Provide audio feedback
+        await ElevenLabsService.speak("Listening...");
+        
+        // Auto-stop after 5 seconds if user forgets
+        setTimeout(async () => {
+          if (WisprFlowService.isCurrentlyRecording()) {
+            setIsListening(false);
+            const command = await WisprFlowService.stopRecordingAndTranscribe();
+            if (command) {
+              setUserCommand(command);
+              await processVoiceCommand(command);
+            }
+          }
+        }, 5000);
+      } else {
+        setError('Could not access microphone');
+      }
+    }
+  };
+
+  // Process voice command and update navigation
+  const processVoiceCommand = async (command: string) => {
+    const lowerCommand = command.toLowerCase();
+    
+    let response = '';
+    let newPrompt = '';
+    
+    // Understand user intent
+    if (lowerCommand.includes('exit') || lowerCommand.includes('leave') || lowerCommand.includes('way out')) {
+      response = "Looking for the exit. I'll guide you there.";
+      newPrompt = `Guide the user to find an exit. Look for exit signs, doors leading outside, or emergency exits. Give clear directions like "Exit sign ahead on your right" or "Door to outside on your left".`;
+    } else if (lowerCommand.includes('bathroom') || lowerCommand.includes('restroom') || lowerCommand.includes('toilet') || lowerCommand.includes('washroom')) {
+      response = "Looking for the restroom. I'll help you find it.";
+      newPrompt = `Guide the user to find a bathroom or restroom. Look for restroom signs, bathroom doors, or indicators. Give clear directions.`;
+    } else if (lowerCommand.includes('elevator') || lowerCommand.includes('lift')) {
+      response = "Looking for an elevator.";
+      newPrompt = `Guide the user to find an elevator. Look for elevator doors, buttons, or signs. Give clear directions.`;
+    } else if (lowerCommand.includes('stairs') || lowerCommand.includes('stairway') || lowerCommand.includes('staircase')) {
+      response = "Looking for stairs.";
+      newPrompt = `Guide the user to find stairs or a stairwell. Look for stairwell doors, stair signs, or actual stairs. Give clear directions.`;
+    } else if (lowerCommand.includes('door') || lowerCommand.includes('entrance')) {
+      response = "Looking for a door.";
+      newPrompt = `Guide the user to find the nearest door. Look for doors, entrances, or doorways. Give clear directions with distance estimates.`;
+    } else if (lowerCommand.includes('help') || lowerCommand.includes('what can')) {
+      response = "You can ask me to find the exit, bathroom, elevator, stairs, or any specific location. Just tap the microphone and speak your request.";
+      newPrompt = ''; // Don't change the prompt
+    } else if (lowerCommand.includes('stop') || lowerCommand.includes('cancel') || lowerCommand.includes('nevermind')) {
+      response = "Okay, continuing with general navigation.";
+      newPrompt = `You are a navigation assistant for a visually impaired person. Give brief, clear directions in 1-2 sentences max. Focus on obstacles, doors, turns, and distance estimates.`;
+    } else {
+      response = "Looking for " + command + " now.";
+      newPrompt = `The user is looking for: ${command}. Help guide them to find it. Look for signs, doors, or any indication of ${command}. Give clear navigation directions.`;
+    }
+    
+    // Speak the response
+    await ElevenLabsService.speak(response);
+    
+    // Update Overshoot prompt if needed
+    if (newPrompt && isStreaming) {
+      try {
+        await OvershootService.updatePrompt(newPrompt);
+        console.log('[CameraScreen] Prompt updated for:', command);
+      } catch (err) {
+        console.error('[CameraScreen] Failed to update prompt:', err);
+      }
     }
   };
 
@@ -152,12 +280,29 @@ const CameraScreen: React.FC<{ onBack: () => void }> = ({ onBack }) => {
 
       {/* Minimal Header */}
       <View style={styles.header}>
-        <TouchableOpacity style={styles.backButton} onPress={onBack}>
+        <TouchableOpacity style={styles.backButton} onPress={handleBack}>
           <Text style={styles.backIcon}>←</Text>
         </TouchableOpacity>
         
-        <View style={[styles.statusDot, isStreaming && styles.statusDotActive]} />
+        <View style={styles.headerRight}>
+          {/* Auto-speak toggle */}
+          <TouchableOpacity 
+            style={[styles.autoSpeakToggle, autoSpeak && styles.autoSpeakActive]}
+            onPress={() => setAutoSpeak(!autoSpeak)}
+          >
+            <Text style={styles.autoSpeakIcon}>{autoSpeak ? '🔊' : '🔇'}</Text>
+          </TouchableOpacity>
+          
+          <View style={[styles.statusDot, isStreaming && styles.statusDotActive]} />
+        </View>
       </View>
+
+      {/* User Command Display */}
+      {userCommand && (
+        <View style={styles.commandBanner}>
+          <Text style={styles.commandText}>🎤 "{userCommand}"</Text>
+        </View>
+      )}
 
       {/* Error Display */}
       {error && (
@@ -173,8 +318,26 @@ const CameraScreen: React.FC<{ onBack: () => void }> = ({ onBack }) => {
         </View>
       )}
 
+      {/* Listening Indicator */}
+      {isListening && (
+        <View style={styles.listeningOverlay}>
+          <Text style={styles.listeningIcon}>🎤</Text>
+          <Text style={styles.listeningText}>Listening...</Text>
+          <Text style={styles.listeningHint}>Tap again to stop</Text>
+        </View>
+      )}
+
       {/* Bottom Controls */}
       <View style={styles.controls}>
+        {/* Manual Speak Button */}
+        <TouchableOpacity
+          style={[styles.speakButton, !results?.rawResult && styles.buttonDisabled]}
+          onPress={handleSpeak}
+          disabled={!results?.rawResult}
+        >
+          <Text style={styles.speakIcon}>🔊</Text>
+        </TouchableOpacity>
+
         {/* Main Action Button */}
         <TouchableOpacity
           style={[
@@ -185,18 +348,17 @@ const CameraScreen: React.FC<{ onBack: () => void }> = ({ onBack }) => {
           onPress={isStreaming ? handleStop : handleStart}
           disabled={isLoading}
         >
-          <Text style={styles.mainButtonText}>
+          <Text style={[styles.mainButtonText, isStreaming && styles.stopButtonText]}>
             {isLoading ? '...' : isStreaming ? 'Stop' : 'Start'}
           </Text>
         </TouchableOpacity>
 
-        {/* Speak Button */}
+        {/* Mic Button for Voice Commands */}
         <TouchableOpacity
-          style={[styles.speakButton, !results?.rawResult && styles.buttonDisabled]}
-          onPress={handleSpeak}
-          disabled={!results?.rawResult}
+          style={[styles.micButton, isListening && styles.micButtonActive]}
+          onPress={handleMicPress}
         >
-          <Text style={styles.speakIcon}>🔊</Text>
+          <Text style={styles.micIcon}>{isListening ? '⏹️' : '🎤'}</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -204,7 +366,7 @@ const CameraScreen: React.FC<{ onBack: () => void }> = ({ onBack }) => {
 };
 
 // Main HomeScreen Component
-export const HomeScreen: React.FC = () => {
+export const HomeScreen = () => {
   const [showCamera, setShowCamera] = useState(false);
 
   if (showCamera) {
@@ -292,7 +454,7 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
   },
 
-  // Minimal Header
+  // Header
   header: {
     position: 'absolute',
     top: 60,
@@ -303,6 +465,11 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: 24,
     zIndex: 10,
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
   },
   backButton: {
     width: 48,
@@ -316,6 +483,20 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 24,
   },
+  autoSpeakToggle: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  autoSpeakActive: {
+    backgroundColor: 'rgba(0, 122, 255, 0.7)',
+  },
+  autoSpeakIcon: {
+    fontSize: 18,
+  },
   statusDot: {
     width: 12,
     height: 12,
@@ -328,6 +509,25 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 0.8,
     shadowRadius: 8,
+  },
+
+  // Command Banner
+  commandBanner: {
+    position: 'absolute',
+    top: 120,
+    left: 24,
+    right: 24,
+    backgroundColor: 'rgba(0, 122, 255, 0.9)',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    zIndex: 10,
+  },
+  commandText: {
+    color: '#fff',
+    fontSize: 14,
+    textAlign: 'center',
+    fontStyle: 'italic',
   },
 
   // Error Banner
@@ -366,6 +566,33 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
 
+  // Listening Overlay
+  listeningOverlay: {
+    position: 'absolute',
+    top: '40%',
+    left: 24,
+    right: 24,
+    backgroundColor: 'rgba(255, 59, 48, 0.95)',
+    borderRadius: 20,
+    padding: 30,
+    alignItems: 'center',
+    zIndex: 20,
+  },
+  listeningIcon: {
+    fontSize: 48,
+    marginBottom: 12,
+  },
+  listeningText: {
+    color: '#fff',
+    fontSize: 24,
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  listeningHint: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 14,
+  },
+
   // Bottom Controls
   controls: {
     position: 'absolute',
@@ -381,7 +608,7 @@ const styles = StyleSheet.create({
   },
   mainButton: {
     backgroundColor: '#fff',
-    width: 160,
+    width: 140,
     height: 56,
     borderRadius: 28,
     justifyContent: 'center',
@@ -399,6 +626,9 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     letterSpacing: 1,
   },
+  stopButtonText: {
+    color: '#fff',
+  },
   speakButton: {
     width: 56,
     height: 56,
@@ -411,6 +641,20 @@ const styles = StyleSheet.create({
     opacity: 0.3,
   },
   speakIcon: {
+    fontSize: 24,
+  },
+  micButton: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  micButtonActive: {
+    backgroundColor: 'rgba(255, 59, 48, 0.8)',
+  },
+  micIcon: {
     fontSize: 24,
   },
 });

@@ -109,7 +109,13 @@ export class OvershootService {
     this.onResultCallback = onResult;
 
     // Simple navigation prompt
-    const defaultPrompt = prompt || 'Describe what you are seeing in regards to navigation';
+    const defaultPrompt = prompt || `You are a navigation assistant for a visually impaired person.
+    Give brief, clear directions in 1-2 sentences max. Focus on:
+    - Obstacles or hazards ahead
+    - Doors, turns, intersections
+    - Distance estimates (steps or feet)
+    Example: "Clear path ahead. Door on your left in 5 steps."
+    Do NOT describe the scene. Only give actionable navigation instructions.`;
 
     // Debug counter for tracking results
     let resultCount = 0;
