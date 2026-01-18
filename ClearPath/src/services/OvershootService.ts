@@ -59,12 +59,23 @@ export class OvershootService {
   private apiUrl: string;
 
   constructor(apiKey?: string, apiUrl?: string) {
-    this.apiKey = apiKey || API_KEY;
-    this.apiUrl = apiUrl || API_URL;
+    // Clean the API key - remove quotes, trim whitespace
+    const rawKey = apiKey || API_KEY;
+    this.apiKey = rawKey.trim().replace(/^["']|["']$/g, ''); // Remove surrounding quotes
+    this.apiUrl = (apiUrl || API_URL).trim();
 
-    console.log('[OvershootService] Initialized');
+    // Debug logging for API key configuration
+    console.log('[OvershootService] ====== INITIALIZATION ======');
     console.log('[OvershootService] API URL:', this.apiUrl);
-    console.log('[OvershootService] Has API Key:', !!this.apiKey && this.apiKey.length > 0);
+    console.log('[OvershootService] Raw key from env:', 
+      process.env.EXPO_PUBLIC_OVERSHOOT_API_KEY 
+        ? `"${process.env.EXPO_PUBLIC_OVERSHOOT_API_KEY.substring(0, 12)}..." (len: ${process.env.EXPO_PUBLIC_OVERSHOOT_API_KEY.length})` 
+        : 'UNDEFINED/EMPTY');
+    console.log('[OvershootService] Cleaned key:', 
+      this.apiKey ? `"${this.apiKey.substring(0, 12)}..." (len: ${this.apiKey.length})` : 'EMPTY');
+    console.log('[OvershootService] Key starts with:', this.apiKey.substring(0, 3));
+    console.log('[OvershootService] Key ends with:', this.apiKey.substring(this.apiKey.length - 3));
+    console.log('[OvershootService] ============================');
   }
 
   /**
@@ -97,13 +108,28 @@ export class OvershootService {
 
     this.onResultCallback = onResult;
 
-    const defaultPrompt = prompt || 
-      'Detect indoor navigation objects: doors, walls, signs (exit, washroom, room numbers), ' +
-      'stairs, elevators, trash cans, chairs, tables, people, obstacles. ' +
-      'For each object, describe its position (left, center, right) and distance (near, medium, far).';
+    // Structured navigation prompt for blind users
+    const defaultPrompt = prompt || `Analyze the current video frames and provide a status update in the following structured order:
+
+1. URGENT ALERTS: List any obstacles within 5 feet or moving towards the user. (e.g., "Person approaching at 1:00," "Trash can at 11:00").
+
+2. PATH AVAILABILITY: Describe the clear path ahead. (e.g., "Hallway continues straight for 20 feet. Slight turn visible at 2:00").
+
+3. KEY OBJECTS & LANDMARKS: Identify doors, signs, or furniture. Read any text on signs verbatim. (e.g., "Door on right at 2:00 marked 'Room 3305'").
+
+4. TERRAIN: Note any changes in floor level or surface. (e.g., "Descending stairs at 12:00, 5 feet away").
+
+Constraints: If the view is blurry or occluded, say "Visual unclear." If there is no change from the last update, say "Environment stable." Keep the total response under 40 words.`;
+
+    // Debug counter for tracking results
+    let resultCount = 0;
 
     try {
-      console.log('[OvershootService] Starting RealtimeVision...');
+      console.log('[OvershootService] ====== STARTING STREAM ======');
+      console.log('[OvershootService] API URL:', this.apiUrl);
+      console.log('[OvershootService] API Key (first 8):', this.apiKey.substring(0, 8) + '...');
+      console.log('[OvershootService] Prompt:', defaultPrompt);
+      console.log('[OvershootService] Creating RealtimeVision instance...');
 
       this.vision = new RealtimeVision({
         apiUrl: this.apiUrl,
@@ -114,13 +140,25 @@ export class OvershootService {
           cameraFacing: 'environment', // Use back camera on mobile
         },
         onResult: (result) => {
-          console.log('[OvershootService] Result:', result);
+          resultCount++;
+          console.log(`[OvershootService] ===== RESULT #${resultCount} =====`);
+          console.log('[OvershootService] Raw result:', JSON.stringify(result, null, 2));
+          console.log('[OvershootService] Result text:', result?.result);
+          console.log('[OvershootService] Latency:', result?.total_latency_ms, 'ms');
+          console.log('[OvershootService] OK:', result?.ok);
+          console.log('[OvershootService] Error:', result?.error);
+          
           const processed = this.processResult(result);
+          console.log('[OvershootService] Processed result:', JSON.stringify(processed, null, 2));
+          
           this.lastResult = processed;
           this.onResultCallback?.(processed);
         },
         onError: (error) => {
-          console.error('[OvershootService] Stream error:', error);
+          console.error('[OvershootService] ===== STREAM ERROR =====');
+          console.error('[OvershootService] Error message:', error?.message);
+          console.error('[OvershootService] Error name:', error?.name);
+          console.error('[OvershootService] Full error:', error);
           this.onResultCallback?.({
             success: false,
             objects: [],
@@ -130,18 +168,25 @@ export class OvershootService {
         },
       });
 
+      console.log('[OvershootService] RealtimeVision created, calling start()...');
       await this.vision.start();
       this.isStreaming = true;
-      console.log('[OvershootService] Streaming started');
+      console.log('[OvershootService] ✅ Streaming started successfully!');
+      console.log('[OvershootService] Waiting for results from Overshoot API...');
       return true;
 
     } catch (error: any) {
-      console.error('[OvershootService] Failed to start:', error);
+      const errorMsg = error?.message || error?.toString() || 'Unknown error';
+      console.error('[OvershootService] Failed to start:', errorMsg);
+      console.error('[OvershootService] Error name:', error?.name);
+      console.error('[OvershootService] Error stack:', error?.stack);
+      console.error('[OvershootService] Full error object:', JSON.stringify(error, null, 2));
+      
       onResult({
         success: false,
         objects: [],
         processingTime: 0,
-        error: error.message || 'Failed to start streaming',
+        error: `SDK Error: ${errorMsg}`,
       });
       return false;
     }
