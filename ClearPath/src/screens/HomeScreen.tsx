@@ -6,8 +6,9 @@
  * Flow:
  * 1. User taps "Navigate" → speaks destination
  * 2. User confirms transcription
- * 3. Steps displayed → user taps "Start Navigation"
- * 4. Active navigation with voice commands (next/previous/repeat)
+ * 3. Navigation auto-starts: first step is spoken, then Overshoot AI activates
+ * 4. Voice commands work (next/previous/repeat/stop)
+ * 5. User taps "End Navigation" or says "stop" to finish
  */
 
 import React, { useState, useRef, useEffect } from 'react';
@@ -87,10 +88,16 @@ const NavigationScreen = ({ onBack }: { onBack: () => void }) => {
       onStateChange: (state) => {
         setNavState(state);
         
-        // Get video stream when navigating starts
-        if (state.status === 'navigating') {
+        // Get video stream when displaying or navigating (camera starts when directions received)
+        if (state.status === 'displaying' || state.status === 'navigating') {
           const stream = UnifiedNav.getVideoStream();
-          setMediaStream(stream);
+          if (stream) {
+            setMediaStream(stream);
+          }
+        } else if (state.status === 'idle' || state.status === 'completed') {
+          // Clear stream when returning to idle
+          setMediaStream(null);
+          setVisionResult(null);
         }
       },
       onStepChange: (step, index, total) => {
@@ -137,11 +144,6 @@ const NavigationScreen = ({ onBack }: { onBack: () => void }) => {
     }
   };
 
-  // Handle Start Navigation button (after steps are displayed)
-  const handleStartNavigation = async () => {
-    await UnifiedNav.startActiveNavigation();
-  };
-
   // Handle confirmation of transcription
   const handleConfirmQuery = async () => {
     if (transcribedQuery) {
@@ -173,11 +175,9 @@ const NavigationScreen = ({ onBack }: { onBack: () => void }) => {
       case 'navigating':
         return { icon: '🛑', text: 'End Navigation', style: styles.navButtonActive };
       case 'requesting':
-        return { icon: '⏳', text: 'Loading...', style: styles.navButtonDisabled };
+        return { icon: '⏳', text: 'Getting Directions...', style: styles.navButtonDisabled };
       case 'verifying':
         return { icon: '✓', text: 'Confirm', style: styles.navButtonDisabled };
-      case 'displaying':
-        return { icon: '🗺️', text: 'Navigate', style: styles.navButton };
       default:
         return { icon: '🎤', text: 'Navigate', style: styles.navButton };
     }
@@ -185,13 +185,13 @@ const NavigationScreen = ({ onBack }: { onBack: () => void }) => {
 
   const buttonConfig = getButtonConfig();
   const isNavigating = navState.status === 'navigating';
-  const showSteps = navState.status === 'displaying' || navState.status === 'navigating';
-  const showStartButton = navState.status === 'displaying';
+  const showCamera = isNavigating && mediaStream;
+  const showSteps = navState.status === 'navigating';
 
   return (
     <View style={styles.cameraContainer}>
-      {/* Camera Preview - Full Screen when navigating */}
-      {isNavigating && mediaStream ? (
+      {/* Camera Preview - Shows when displaying directions or navigating */}
+      {showCamera ? (
         <VideoPreview mediaStream={mediaStream} />
       ) : (
         <View style={styles.videoPlaceholder}>
@@ -202,7 +202,6 @@ const NavigationScreen = ({ onBack }: { onBack: () => void }) => {
           <Text style={styles.placeholderText}>
             {navState.status === 'listening' ? 'Listening for your destination...' :
              navState.status === 'requesting' ? 'Getting directions...' :
-             navState.status === 'displaying' ? 'Ready to navigate!' :
              'Tap Navigate to begin'}
           </Text>
         </View>
@@ -299,13 +298,6 @@ const NavigationScreen = ({ onBack }: { onBack: () => void }) => {
               </View>
             ))}
           </ScrollView>
-          
-          {/* Start Navigation Button */}
-          {showStartButton && (
-            <TouchableOpacity style={styles.startNavButton} onPress={handleStartNavigation}>
-              <Text style={styles.startNavButtonText}>🚀 Start Navigation</Text>
-            </TouchableOpacity>
-          )}
         </View>
       )}
 
@@ -674,18 +666,6 @@ const styles = StyleSheet.create({
   },
   stepTextCompleted: {
     textDecorationLine: 'line-through',
-  },
-  startNavButton: {
-    backgroundColor: 'rgba(52, 199, 89, 0.9)',
-    paddingVertical: 16,
-    margin: 14,
-    borderRadius: 25,
-    alignItems: 'center',
-  },
-  startNavButtonText: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: '600',
   },
 
   // Vision Overlay

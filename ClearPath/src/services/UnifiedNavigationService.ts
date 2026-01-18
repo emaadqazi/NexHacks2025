@@ -62,6 +62,9 @@ export class UnifiedNavigationService {
   private callbacks: UnifiedNavCallbacks | null = null;
   private overshootMuted: boolean = false;
   private lastOvershootResult: DetectionResponse | null = null;
+  private isSpeakingNavStep: boolean = false; // True when speaking navigation steps
+  private lastOvershootSpeechTime: number = 0; // Throttle Overshoot speech
+  private readonly OVERSHOOT_SPEECH_INTERVAL = 5000; // Min 5 seconds between Overshoot announcements
 
   constructor() {
     this.wispr = WisprFlowService;
@@ -171,6 +174,7 @@ export class UnifiedNavigationService {
 
   /**
    * Request navigation directions from Gemini
+   * Automatically starts navigation after directions are received
    */
   async requestDirections(query: string): Promise<boolean> {
     if (!this.gemini) {
@@ -196,16 +200,32 @@ export class UnifiedNavigationService {
         throw new Error('Could not parse navigation steps');
       }
 
+      // Start camera preview (Overshoot streaming but muted)
+      // Don't pass a custom prompt - let Overshoot use its default prompt
+      this.overshootMuted = true;
+      this.isSpeakingNavStep = false;
+      this.lastOvershootSpeechTime = 0;
+      
+      await this.overshoot.startStreaming(
+        (res) => this.handleOvershootResult(res)
+        // No custom prompt - uses default from OvershootService
+      );
+
       this.updateState({
-        status: 'displaying',
+        status: 'navigating', // Go directly to navigating
         userQuery: query,
         currentFloor: result.floor,
         steps: parsed.steps,
         currentStepIndex: 0,
         totalSteps: parsed.steps.length,
+        isOvershootMuted: true,
       });
 
-      console.log(`[UnifiedNav] Got ${parsed.steps.length} steps`);
+      console.log(`[UnifiedNav] Got ${parsed.steps.length} steps, auto-starting navigation`);
+
+      // Auto-start: speak first step, then unmute Overshoot
+      await this.autoStartNavigation();
+      
       return true;
 
     } catch (error) {
@@ -217,85 +237,52 @@ export class UnifiedNavigationService {
     }
   }
 
-  // ==================== PHASE 3: Active Navigation ====================
-
   /**
-   * Start active navigation (after user clicks Start)
-   * - Speak first 1-2 steps
-   * - Start Overshoot vision
-   * - Start voice command listening
+   * Auto-start navigation after directions received
+   * Speaks first step, waits, then enables Overshoot
    */
-  async startActiveNavigation(): Promise<boolean> {
-    if (this.state.status !== 'displaying') {
-      console.warn('[UnifiedNav] Cannot start navigation in current state:', this.state.status);
-      return false;
-    }
+  private async autoStartNavigation(): Promise<void> {
+    // Speak ONLY the first step
+    const firstStepText = this.stepsManager.getCurrentStepForSpeech();
+    await this.speak(firstStepText);
 
-    this.updateState({ status: 'navigating', currentStepIndex: 0 });
+    // Wait for speech to fully settle
+    await this.delay(1000);
 
-    // Speak the first 1-2 steps
-    const stepsText = this.stepsManager.getStepsForSpeech(2);
-    await this.speak(stepsText);
-
-    // Build context-aware prompt for Overshoot
-    const navPrompt = this.buildOvershootPrompt();
-
-    // Start Overshoot vision streaming
-    const overshootStarted = await this.overshoot.startStreaming(
-      (result) => this.handleOvershootResult(result),
-      navPrompt
-    );
-
-    if (!overshootStarted) {
-      console.warn('[UnifiedNav] Overshoot failed to start, continuing without vision');
-    }
+    // NOW unmute Overshoot AI (uses its default prompt)
+    this.overshootMuted = false;
+    this.lastOvershootSpeechTime = Date.now(); // Reset timer to give a pause before first Overshoot speech
+    this.updateState({ isOvershootMuted: false });
 
     // Start voice command listening
     this.wispr.startContinuousListening((command) => this.handleVoiceCommand(command));
 
-    console.log('[UnifiedNav] Active navigation started');
-    return true;
+    console.log('[UnifiedNav] Navigation auto-started, Overshoot unmuted');
+  }
+
+  // ==================== PHASE 3: Active Navigation ====================
+
+  /**
+   * Start active navigation (legacy method - navigation now auto-starts)
+   * Kept for backward compatibility
+   */
+  async startActiveNavigation(): Promise<boolean> {
+    // Navigation now auto-starts after directions are received
+    // This method is kept for backward compatibility
+    if (this.state.status === 'navigating') {
+      console.log('[UnifiedNav] Already navigating');
+      return true;
+    }
+    
+    console.warn('[UnifiedNav] startActiveNavigation called but navigation auto-starts now');
+    return false;
   }
 
   /**
-   * Build Overshoot prompt with navigation context
+   * Helper to wait/delay
    */
-  private buildOvershootPrompt(): string {
-    const currentStep = this.stepsManager.getCurrentStep();
-    const nextSteps = this.state.steps.slice(
-      this.state.currentStepIndex,
-      this.state.currentStepIndex + 3
-    );
-
-    const stepsContext = nextSteps
-      .map((s, i) => `${i + 1}. ${s.instruction}`)
-      .join('\n');
-
-    return `You are a real-time navigation guide for a visually impaired person.
-
-CURRENT NAVIGATION CONTEXT:
-Floor: ${this.state.currentFloor || 'Unknown'}
-Current step: ${currentStep?.instruction || 'Starting navigation'}
-
-UPCOMING STEPS:
-${stepsContext}
-
-PRIORITY 1 - IMMEDIATE SAFETY:
-- Obstacles within 10 feet: people, chairs, objects
-- Hazards: stairs, steps, uneven surfaces
-- Moving people approaching
-
-PRIORITY 2 - NAVIGATION CONFIRMATION:
-- Confirm landmarks from the steps above
-- Announce doors, turns, intersections
-- Read room numbers and signs
-
-PRIORITY 3 - COURSE CORRECTION:
-- Guide if user veers off path
-- Confirm when step is completed
-
-OUTPUT: ONE brief sentence (max 12 words). Be direct and actionable.
-Examples: "Door ahead in 5 steps." / "Person on your left." / "Turn coming up on right."`;
+  private delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   /**
@@ -305,15 +292,37 @@ Examples: "Door ahead in 5 steps." / "Person on your left." / "Turn coming up on
     this.lastOvershootResult = result;
     this.callbacks?.onVisionUpdate(result);
 
-    // Speak result if not muted and has actionable content
-    if (!this.overshootMuted && result.success && result.rawResult) {
-      // Only speak important updates
-      const text = result.rawResult;
-      const isImportant = this.isImportantOvershootResult(text);
-      
-      if (isImportant && !this.tts.isCurrentlySpeaking()) {
-        this.speak(text);
-      }
+    // Don't speak if:
+    // - Overshoot is muted
+    // - Currently speaking navigation steps
+    // - TTS is already speaking
+    // - Not enough time has passed since last Overshoot speech
+    if (this.overshootMuted || this.isSpeakingNavStep) {
+      return;
+    }
+
+    if (!result.success || !result.rawResult) {
+      return;
+    }
+
+    const now = Date.now();
+    const timeSinceLastSpeech = now - this.lastOvershootSpeechTime;
+    
+    if (timeSinceLastSpeech < this.OVERSHOOT_SPEECH_INTERVAL) {
+      return; // Throttle - too soon since last announcement
+    }
+
+    if (this.tts.isCurrentlySpeaking()) {
+      return; // Don't interrupt ongoing speech
+    }
+
+    const text = result.rawResult;
+    const isImportant = this.isImportantOvershootResult(text);
+    
+    if (isImportant) {
+      this.lastOvershootSpeechTime = now;
+      // Use TTS directly without triggering onSpeaking callback for Overshoot
+      this.tts.speak(text);
     }
   }
 
@@ -364,8 +373,11 @@ Examples: "Door ahead in 5 steps." / "Person on your left." / "Turn coming up on
         break;
     }
 
-    // Resume Overshoot after speaking
-    setTimeout(() => this.unmuteOvershoot(), 500);
+    // Resume Overshoot after speaking, with a delay before it can speak again
+    setTimeout(() => {
+      this.unmuteOvershoot();
+      this.lastOvershootSpeechTime = Date.now(); // Reset timer to give pause before Overshoot speaks
+    }, 500);
   }
 
   private async handleNextStep(): Promise<void> {
@@ -378,15 +390,19 @@ Examples: "Door ahead in 5 steps." / "Person on your left." / "Turn coming up on
       const speechText = this.stepsManager.getCurrentStepForSpeech();
       await this.speak(speechText);
 
-      // Update Overshoot context with new step
-      this.updateOvershootContext();
-
-      // Check if at last step
+      // Check if this is the last step - let user know
       if (this.stepsManager.isAtLastStep()) {
+        await this.delay(300);
         await this.speak("This is the final step. You're almost there!");
       }
     } else {
-      await this.speak("You're at the last step. Say 'stop' when you arrive.");
+      // Already at last step - repeat it and remind user
+      const currentStep = this.stepsManager.getCurrentStep();
+      if (currentStep) {
+        await this.speak(`You're on the final step. ${currentStep.instruction} Say 'stop' when you arrive.`);
+      } else {
+        await this.speak("Navigation complete. Say 'stop' to end.");
+      }
     }
   }
 
@@ -422,24 +438,23 @@ Examples: "Door ahead in 5 steps." / "Person on your left." / "Turn coming up on
     await this.speak(helpText);
   }
 
-  /**
-   * Update Overshoot prompt with current navigation context
-   */
-  private async updateOvershootContext(): Promise<void> {
-    if (this.overshoot.isActive()) {
-      const newPrompt = this.buildOvershootPrompt();
-      await this.overshoot.updatePrompt(newPrompt);
-    }
-  }
-
   // ==================== Audio Control ====================
 
   /**
-   * Speak text using TTS
+   * Speak text using TTS (for navigation steps)
+   * Sets isSpeakingNavStep to prevent Overshoot from interrupting
    */
   private async speak(text: string): Promise<void> {
+    this.isSpeakingNavStep = true;
     this.callbacks?.onSpeaking(text);
-    await this.tts.speak(text);
+    
+    try {
+      await this.tts.speak(text);
+      // Wait a bit after speech completes
+      await this.delay(300);
+    } finally {
+      this.isSpeakingNavStep = false;
+    }
   }
 
   /**
@@ -504,6 +519,8 @@ Examples: "Door ahead in 5 steps." / "Person on your left." / "Turn coming up on
     this.tts.stop();
     this.stepsManager.reset();
     this.overshootMuted = false;
+    this.isSpeakingNavStep = false;
+    this.lastOvershootSpeechTime = 0;
     this.lastOvershootResult = null;
     this.state = this.getInitialState();
     this.callbacks?.onStateChange(this.state);
