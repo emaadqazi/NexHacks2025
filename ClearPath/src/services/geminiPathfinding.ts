@@ -1,27 +1,16 @@
-#!/usr/bin/env node
 /**
  * Indoor Navigation Assistant for Visually Impaired Users
  * Uses Gemini API to provide step-by-step navigation instructions.
  * 
- * Can be used as:
- * 1. CLI tool: `npx tsx geminiPathfinding.ts "your query"`
- * 2. Service: import { GeminiNavigationService } from './geminiPathfinding'
+ * Browser and React Native compatible version using inline images.
  */
 
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { GoogleAIFileManager } from '@google/generative-ai/server';
-import * as fs from 'fs';
-import * as path from 'path';
-import * as dotenv from 'dotenv';
-import { Command } from 'commander';
-
-// Load environment variables
-dotenv.config();
 
 type Verbosity = 'minimal' | 'moderate' | 'detailed';
 
 interface FloorMaps {
-  [key: string]: string;
+  [key: string]: any;
 }
 
 interface NavigationResult {
@@ -33,6 +22,15 @@ interface NavigationResult {
   prompt: string;
   response: string;
 }
+
+// Import floor plan images for browser/Expo
+// These will be bundled by the build system
+const FLOOR_IMAGES: FloorMaps = {
+  lower: require('../../data/lower-level.png'),
+  first: require('../../data/first-floor.png'),
+  second: require('../../data/second-floor.png'),
+  third: require('../../data/third-floor.png'),
+};
 
 /**
  * Default prompt template for navigation
@@ -82,20 +80,26 @@ Destination Confirmation: [Describe the entrance of the target room]`;
 /**
  * Gemini Navigation Service
  * Provides pathfinding using Gemini API with floor plan images
+ * Browser-compatible version using inline images
  */
 class GeminiNavigationService {
   private apiKey: string;
   private verbosity: Verbosity;
   private genAI: GoogleGenerativeAI;
-  private fileManager: GoogleAIFileManager;
   private promptTemplate: string;
   private floorMaps: FloorMaps;
 
   constructor(apiKey?: string, verbosity: Verbosity = 'detailed') {
     // Get API key from parameter or environment variable
-    this.apiKey = apiKey || process.env.GEMINI_API_KEY || process.env.EXPO_PUBLIC_GEMINI_API_KEY || '';
+    // Check both process.env (Node.js) and direct access (browser with bundler)
+    const envKey = typeof process !== 'undefined' && process.env 
+      ? (process.env.GEMINI_API_KEY || process.env.EXPO_PUBLIC_GEMINI_API_KEY)
+      : undefined;
+    
+    this.apiKey = apiKey || envKey || '';
+    
     if (!this.apiKey) {
-      throw new Error('Please provide GEMINI_API_KEY environment variable');
+      throw new Error('Please provide GEMINI_API_KEY or EXPO_PUBLIC_GEMINI_API_KEY environment variable');
     }
 
     // Validate and set verbosity
@@ -107,32 +111,14 @@ class GeminiNavigationService {
 
     // Initialize Gemini API
     this.genAI = new GoogleGenerativeAI(this.apiKey);
-    this.fileManager = new GoogleAIFileManager(this.apiKey);
 
-    // Load prompt template
-    this.promptTemplate = this.loadPromptTemplate();
+    // Use default prompt template
+    this.promptTemplate = DEFAULT_PROMPT_TEMPLATE;
 
-    // Map floor names to image files
-    this.floorMaps = {
-      lower: 'data/lower-level.png',
-      first: 'data/first-floor.png',
-      second: 'data/second-floor.png',
-      third: 'data/third-floor.png',
-    };
+    // Use imported floor images
+    this.floorMaps = FLOOR_IMAGES;
 
-    console.log('[GeminiNavigation] Service initialized');
-  }
-
-  private loadPromptTemplate(): string {
-    try {
-      const templatePath = path.join(process.cwd(), 'PROMPT.md');
-      if (fs.existsSync(templatePath)) {
-        return fs.readFileSync(templatePath, 'utf-8');
-      }
-    } catch (error) {
-      console.warn('[GeminiNavigation] Could not load PROMPT.md, using default template');
-    }
-    return DEFAULT_PROMPT_TEMPLATE;
+    console.log('[GeminiNavigation] Service initialized (browser-compatible mode)');
   }
 
   /**
@@ -190,7 +176,7 @@ class GeminiNavigationService {
     return prompt;
   }
 
-  private getFloorPlanPath(floor: string): string {
+  private getFloorPlanImage(floor: string): any {
     const floorLower = floor.toLowerCase();
     if (floorLower in this.floorMaps) {
       return this.floorMaps[floorLower];
@@ -199,12 +185,42 @@ class GeminiNavigationService {
   }
 
   /**
+   * Convert image to base64 data URI for inline usage
+   */
+  private async imageToBase64(imageSource: any): Promise<string> {
+    // If it's already a data URI, return it
+    if (typeof imageSource === 'string' && imageSource.startsWith('data:')) {
+      return imageSource;
+    }
+
+    // For Expo/React Native, the require() returns a module object
+    // We need to fetch the actual image data
+    try {
+      const response = await fetch(imageSource);
+      const blob = await response.blob();
+      
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const base64 = reader.result as string;
+          resolve(base64);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+    } catch (error) {
+      console.error('[GeminiNavigation] Error converting image to base64:', error);
+      throw new Error('Failed to load floor plan image');
+    }
+  }
+
+  /**
    * Navigate from one location to another
    * @param query User's navigation query (e.g., "I'm at the fitness center, how do I get to room 205?")
-   * @param saveResponse Whether to save the response to a file (CLI mode)
+   * @param saveResponse Whether to save the response (not supported in browser)
    * @returns Navigation result with step-by-step instructions
    */
-  async navigate(query: string, saveResponse: boolean = true): Promise<NavigationResult> {
+  async navigate(query: string, saveResponse: boolean = false): Promise<NavigationResult> {
     // Detect floor from query
     const floor = this.detectFloor(query);
     console.log(`[GeminiNavigation] Query: ${query}`);
@@ -215,28 +231,30 @@ class GeminiNavigationService {
     const prompt = this.createPrompt(query, floor);
 
     // Get floor plan image
-    const floorPlanPath = this.getFloorPlanPath(floor);
+    const floorPlanImage = this.getFloorPlanImage(floor);
+    console.log(`[GeminiNavigation] Loading floor plan for: ${floor}`);
 
-    if (!fs.existsSync(floorPlanPath)) {
-      throw new Error(`Floor plan not found: ${floorPlanPath}`);
+    // Convert image to base64
+    const base64Image = await this.imageToBase64(floorPlanImage);
+    
+    // Extract the base64 data and mime type
+    const matches = base64Image.match(/^data:([^;]+);base64,(.+)$/);
+    if (!matches) {
+      throw new Error('Invalid base64 image format');
     }
+    const mimeType = matches[1];
+    const base64Data = matches[2];
 
-    console.log(`[GeminiNavigation] Using floor plan: ${floorPlanPath}`);
-    console.log(`[GeminiNavigation] Calling Gemini API...`);
+    console.log(`[GeminiNavigation] Calling Gemini API with inline image...`);
 
-    // Upload image and generate response
-    const uploadResult = await this.fileManager.uploadFile(floorPlanPath, {
-      mimeType: 'image/png',
-      displayName: path.basename(floorPlanPath),
-    });
-
-    const model = this.genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+    // Use inline image data instead of file upload
+    const model = this.genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
     const result = await model.generateContent([
       prompt,
       {
-        fileData: {
-          mimeType: uploadResult.file.mimeType,
-          fileUri: uploadResult.file.uri,
+        inlineData: {
+          mimeType: mimeType,
+          data: base64Data,
         },
       },
     ]);
@@ -249,124 +267,16 @@ class GeminiNavigationService {
       query: query,
       floor: floor,
       verbosity: this.verbosity,
-      floorPlan: floorPlanPath,
+      floorPlan: `${floor}-floor`,
       prompt: prompt,
       response: responseText,
     };
 
-    // Save response if requested
-    if (saveResponse) {
-      this.saveResponse(navigationResult);
-    }
-
     console.log(`[GeminiNavigation] Navigation complete`);
     return navigationResult;
   }
-
-  private saveResponse(result: NavigationResult): void {
-    try {
-      // Create responses directory if it doesn't exist
-      const responsesDir = path.join(process.cwd(), 'responses');
-      if (!fs.existsSync(responsesDir)) {
-        fs.mkdirSync(responsesDir, { recursive: true });
-      }
-
-      // Create filename with timestamp
-      const now = new Date();
-      const timestamp = now
-        .toISOString()
-        .replace(/[-:]/g, '')
-        .replace(/T/, '_')
-        .split('.')[0];
-      const filename = path.join(responsesDir, `navigation_${timestamp}.json`);
-
-      // Save as JSON
-      fs.writeFileSync(filename, JSON.stringify(result, null, 2));
-
-      console.log(`[GeminiNavigation] Response saved to: ${filename}`);
-    } catch (error) {
-      console.warn('[GeminiNavigation] Could not save response:', error);
-    }
-  }
-}
-
-// Legacy alias for backward compatibility
-const NavigationAssistant = GeminiNavigationService;
-
-async function main() {
-  const program = new Command();
-
-  program
-    .name('navigate')
-    .description('Indoor Navigation Assistant for Visually Impaired Users')
-    .argument('[query...]', 'Navigation query (e.g., "from entrance to room 205 on second floor")')
-    .option(
-      '-v, --verbosity <level>',
-      'Level of detail in instructions (minimal, moderate, detailed)',
-      'detailed'
-    )
-    .option('--no-save', 'Do not save response to file')
-    .addHelpText(
-      'after',
-      `
-Examples:
-  $ node navigate.ts "I am at the entrance, how do I get to room 205?"
-  $ tsx navigate.ts --verbosity minimal "Navigate to the library"
-  $ tsx navigate.ts -v moderate "Second floor, fitness center to conference room"
-      `
-    );
-
-  program.parse();
-
-  const options = program.opts();
-  const queryArgs = program.args;
-
-  // Get query from arguments or use default
-  let query: string;
-  if (queryArgs.length > 0) {
-    query = queryArgs.join(' ');
-  } else {
-    query = 'i am on the second floor near the fitness center, how can i reach the danforth conference room';
-    console.log('No query provided. Using example query:');
-    console.log(`Query: ${query}\n`);
-  }
-
-  // Validate verbosity
-  const verbosity = options.verbosity as Verbosity;
-  const validVerbosity: Verbosity[] = ['minimal', 'moderate', 'detailed'];
-  if (!validVerbosity.includes(verbosity)) {
-    console.error(`❌ Error: Verbosity must be one of: ${validVerbosity.join(', ')}`);
-    process.exit(1);
-  }
-
-  try {
-    // Initialize service with verbosity setting
-    const service = new GeminiNavigationService(undefined, verbosity);
-
-    // Process query
-    const result = await service.navigate(query, options.save);
-
-    // Print response
-    console.log('\n' + '='.repeat(60));
-    console.log('NAVIGATION INSTRUCTIONS');
-    console.log('='.repeat(60) + '\n');
-    console.log(result.response);
-  } catch (error) {
-    if (error instanceof Error) {
-      console.error(`❌ Error: ${error.message}`);
-    } else {
-      console.error(`❌ Error: ${error}`);
-    }
-    process.exit(1);
-  }
-}
-
-// Only run main if this is the entry point (CLI mode)
-// Check if we're being run directly vs imported
-const isMainModule = typeof require !== 'undefined' && require.main === module;
-if (isMainModule) {
-  main();
 }
 
 // Export service and types
-export { GeminiNavigationService, NavigationAssistant, NavigationResult, Verbosity };
+export { GeminiNavigationService, NavigationResult, Verbosity };
+export type { FloorMaps };

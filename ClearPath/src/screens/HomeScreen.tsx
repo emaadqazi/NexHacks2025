@@ -350,7 +350,7 @@ const CameraScreen = ({ onBack }: { onBack: () => void }) => {
     } else if (navStatus === 'idle') {
       // Start the workflow - begin recording
       setNavStatus('listening');
-      await ElevenLabsService.speak("Describe where you want to go. For example: I'm on floor two, get me from the fitness center to the activities room.");
+      await ElevenLabsService.speak("Describe where you want to go.");
       
       const started = await NavigationWorkflow.startListening(navCallbacks);
       

@@ -13,29 +13,7 @@
 
 import WisprFlowService from './WisprFlow';
 import { OvershootService, DetectionResponse } from './OvershootService';
-
-// Type definitions for Gemini service
-interface NavigationResult {
-  timestamp: string;
-  query: string;
-  floor: string;
-  verbosity: 'minimal' | 'moderate' | 'detailed';
-  floorPlan: string;
-  prompt: string;
-  response: string;
-}
-
-// Conditionally import Gemini service (Node.js only)
-let GeminiNavigationService: any = null;
-let geminiImportError: any = null;
-
-try {
-  const geminiModule = require('./geminiPathfinding');
-  GeminiNavigationService = geminiModule.GeminiNavigationService;
-} catch (error) {
-  geminiImportError = error;
-  console.warn('[NavigationWorkflow] Gemini service unavailable in browser environment');
-}
+import { GeminiNavigationService, NavigationResult } from './geminiPathfinding';
 
 export type { NavigationResult };
 
@@ -62,7 +40,7 @@ export interface WorkflowCallbacks {
 export class NavigationWorkflowService {
   private wisprFlow: typeof WisprFlowService;
   private overshoot: OvershootService;
-  private gemini: any | null = null;
+  private gemini: GeminiNavigationService | null = null;
   private state: NavigationState = { status: 'idle' };
   private callbacks: WorkflowCallbacks | null = null;
   private navigationContext: string = '';
@@ -71,15 +49,13 @@ export class NavigationWorkflowService {
     this.wisprFlow = WisprFlowService;
     this.overshoot = new OvershootService();
     
-    // Initialize Gemini service (will throw if API key not configured or if import failed)
-    if (GeminiNavigationService && !geminiImportError) {
-      try {
-        this.gemini = new GeminiNavigationService();
-      } catch (error) {
-        console.warn('[NavigationWorkflow] Gemini not initialized:', error);
-      }
-    } else {
-      console.warn('[NavigationWorkflow] Gemini service unavailable in browser - use Node.js for pathfinding features');
+    // Initialize Gemini service (browser-compatible)
+    try {
+      this.gemini = new GeminiNavigationService();
+      console.log('[NavigationWorkflow] Gemini service initialized successfully');
+    } catch (error) {
+      console.error('[NavigationWorkflow] Failed to initialize Gemini service:', error);
+      this.gemini = null;
     }
   }
 
