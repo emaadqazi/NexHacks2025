@@ -1,97 +1,163 @@
 /**
- * Wispr Flow Speech-to-Text Service
- * Converts user voice commands to text for navigation requests
+ * Speech-to-Text Service using Web Speech API
+ * Real-time speech recognition for navigation commands
  */
 
-const API_KEY = process.env.EXPO_PUBLIC_WISPR_API_KEY || '';
-const API_URL = 'https://api.wisprflow.ai/api'; // REST endpoint
-
 export class WisprFlowService {
-  private apiKey: string;
-  private mediaRecorder: MediaRecorder | null = null;
-  private audioChunks: Blob[] = [];
+  private recognition: any = null;
   private isRecording: boolean = false;
+  private finalTranscript: string = '';
+  private resolvePromise: ((text: string) => void) | null = null;
 
   constructor() {
-    this.apiKey = API_KEY.trim();
-    console.log('[WisprFlow] Initialized, API key configured:', !!this.apiKey);
+    this.initRecognition();
+  }
+
+  private initRecognition() {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    
+    if (!SpeechRecognition) {
+      console.warn('[WisprFlow] Web Speech API not supported in this browser');
+      return;
+    }
+
+    this.recognition = new SpeechRecognition();
+    this.recognition.lang = 'en-US';
+    this.recognition.continuous = true; // Keep listening
+    this.recognition.interimResults = true; // Show partial results
+    this.recognition.maxAlternatives = 1;
+
+    this.recognition.onstart = () => {
+      console.log('[WisprFlow] Speech recognition started');
+      this.isRecording = true;
+      this.finalTranscript = '';
+    };
+
+    this.recognition.onresult = (event: any) => {
+      let interimTranscript = '';
+      
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
+        if (result.isFinal) {
+          this.finalTranscript += result[0].transcript + ' ';
+          console.log('[WisprFlow] Final:', result[0].transcript);
+        } else {
+          interimTranscript += result[0].transcript;
+          console.log('[WisprFlow] Interim:', interimTranscript);
+        }
+      }
+    };
+
+    this.recognition.onerror = (event: any) => {
+      console.error('[WisprFlow] Recognition error:', event.error);
+      
+      // Don't fail on no-speech - user might just be quiet
+      if (event.error === 'no-speech') {
+        console.log('[WisprFlow] No speech detected, but continuing...');
+        return;
+      }
+      
+      this.isRecording = false;
+      if (this.resolvePromise) {
+        this.resolvePromise(this.finalTranscript.trim());
+        this.resolvePromise = null;
+      }
+    };
+
+    this.recognition.onend = () => {
+      console.log('[WisprFlow] Recognition ended, transcript:', this.finalTranscript);
+      this.isRecording = false;
+      
+      if (this.resolvePromise) {
+        this.resolvePromise(this.finalTranscript.trim());
+        this.resolvePromise = null;
+      }
+    };
+
+    console.log('[WisprFlow] Web Speech API initialized successfully');
   }
 
   hasApiKey(): boolean {
-    return !!this.apiKey && this.apiKey.length > 0;
+    // Web Speech API doesn't need an API key
+    return this.recognition !== null;
   }
 
   /**
-   * Start recording audio from microphone
+   * Start listening for speech
    */
   async startRecording(): Promise<boolean> {
+    if (!this.recognition) {
+      console.error('[WisprFlow] Speech recognition not available');
+      return false;
+    }
+
     if (this.isRecording) {
       console.warn('[WisprFlow] Already recording');
-      return false;
+      return true;
     }
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      this.mediaRecorder = new MediaRecorder(stream);
-      this.audioChunks = [];
-
-      this.mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          this.audioChunks.push(event.data);
-        }
-      };
-
-      this.mediaRecorder.start();
-      this.isRecording = true;
-      console.log('[WisprFlow] Recording started');
+      // Reset state
+      this.finalTranscript = '';
+      this.resolvePromise = null;
+      
+      // Start recognition
+      this.recognition.start();
       return true;
-    } catch (error) {
-      console.error('[WisprFlow] Failed to start recording:', error);
+    } catch (error: any) {
+      // Handle "already started" error gracefully
+      if (error.message?.includes('already started')) {
+        console.log('[WisprFlow] Recognition already running');
+        this.isRecording = true;
+        return true;
+      }
+      console.error('[WisprFlow] Failed to start:', error);
       return false;
     }
   }
 
   /**
-   * Stop recording and transcribe the audio
+   * Stop listening and get the transcribed text
    */
   async stopRecordingAndTranscribe(): Promise<string> {
-    if (!this.mediaRecorder || !this.isRecording) {
-      console.warn('[WisprFlow] Not currently recording');
+    if (!this.recognition) {
+      console.warn('[WisprFlow] Speech recognition not available');
       return '';
     }
 
-    return new Promise((resolve) => {
-      this.mediaRecorder!.onstop = async () => {
-        const audioBlob = new Blob(this.audioChunks, { type: 'audio/webm' });
-        this.isRecording = false;
-        
-        // Stop all tracks
-        this.mediaRecorder?.stream.getTracks().forEach(track => track.stop());
-        
-        console.log('[WisprFlow] Recording stopped, transcribing...');
-        
-        try {
-          const text = await this.transcribe(audioBlob);
-          resolve(text);
-        } catch (error) {
-          console.error('[WisprFlow] Transcription error:', error);
-          resolve('');
-        }
-      };
+    if (!this.isRecording) {
+      console.warn('[WisprFlow] Not currently recording');
+      return this.finalTranscript.trim();
+    }
 
-      this.mediaRecorder!.stop();
+    return new Promise((resolve) => {
+      this.resolvePromise = resolve;
+      
+      // Give a small delay to capture any final words
+      setTimeout(() => {
+        try {
+          this.recognition.stop();
+        } catch (e) {
+          console.log('[WisprFlow] Stop called but recognition already stopped');
+          resolve(this.finalTranscript.trim());
+        }
+      }, 300);
     });
   }
 
   /**
-   * Cancel recording without transcribing
+   * Cancel recording without returning result
    */
   cancelRecording(): void {
-    if (this.mediaRecorder && this.isRecording) {
-      this.mediaRecorder.stream.getTracks().forEach(track => track.stop());
-      this.mediaRecorder.stop();
+    if (this.recognition && this.isRecording) {
+      try {
+        this.recognition.abort();
+      } catch (e) {
+        console.log('[WisprFlow] Abort error (non-critical):', e);
+      }
       this.isRecording = false;
-      this.audioChunks = [];
+      this.finalTranscript = '';
+      this.resolvePromise = null;
       console.log('[WisprFlow] Recording cancelled');
     }
   }
@@ -101,73 +167,6 @@ export class WisprFlowService {
    */
   isCurrentlyRecording(): boolean {
     return this.isRecording;
-  }
-
-  /**
-   * Transcribe audio blob using WisprFlow API
-   */
-  private async transcribe(audioBlob: Blob): Promise<string> {
-    if (!this.hasApiKey()) {
-      console.error('[WisprFlow] API key not configured');
-      // Fallback to browser speech recognition if available
-      return this.browserSpeechFallback();
-    }
-
-    try {
-      const formData = new FormData();
-      formData.append('audio', audioBlob, 'recording.webm');
-
-      const response = await fetch(API_URL, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.apiKey}`,
-        },
-        body: formData,
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error("WisprFlow API error (" + response.status + "): " + errorText);
-      }
-
-      const result = await response.json();
-      const text = result.text || result.transcription || result.transcript || '';
-      console.log('[WisprFlow] Transcribed:', text);
-      return text;
-    } catch (error) {
-      console.error('[WisprFlow] Transcription failed:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Fallback to browser's built-in speech recognition
-   */
-  private browserSpeechFallback(): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      
-      if (!SpeechRecognition) {
-        reject(new Error('Speech recognition not supported'));
-        return;
-      }
-
-      const recognition = new SpeechRecognition();
-      recognition.lang = 'en-US';
-      recognition.continuous = false;
-      recognition.interimResults = false;
-
-      recognition.onresult = (event: any) => {
-        const text = event.results[0][0].transcript;
-        resolve(text);
-      };
-
-      recognition.onerror = (event: any) => {
-        reject(new Error(event.error));
-      };
-
-      recognition.start();
-    });
   }
 }
 

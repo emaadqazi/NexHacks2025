@@ -128,6 +128,12 @@ const CameraScreen = ({ onBack }: { onBack: () => void }) => {
       setResults(result);
 
       if (!result.success && result.error) {
+        // Ignore keepalive/stream errors - these are transient WebRTC issues
+        const errMsg = result.error.toLowerCase();
+        if (errMsg.includes('stream_not_found') || errMsg.includes('keepalive')) {
+          console.log('[CameraScreen] Ignoring transient error:', result.error);
+          return; // Don't show this error
+        }
         setError(result.error);
         return;
       }

@@ -151,15 +151,21 @@ export class OvershootService {
           this.onResultCallback?.(processed);
         },
         onError: (error) => {
-          console.error('[OvershootService] ===== STREAM ERROR =====');
-          console.error('[OvershootService] Error message:', error?.message);
-          console.error('[OvershootService] Error name:', error?.name);
-          console.error('[OvershootService] Full error:', error);
+          const errorMsg = error?.message || '';
+          console.error('[OvershootService] Stream error:', errorMsg);
+          
+          // Ignore keepalive/stream_not_found errors - these are transient WebRTC connection issues
+          if (errorMsg.includes('stream_not_found') || errorMsg.includes('keepalive') || errorMsg.includes('Keepalive')) {
+            console.log('[OvershootService] Ignoring transient keepalive error');
+            return; // Don't show this error to user
+          }
+          
+          // Only report real errors to the UI
           this.onResultCallback?.({
             success: false,
             objects: [],
             processingTime: 0,
-            error: error.message,
+            error: errorMsg,
           });
         },
       });
