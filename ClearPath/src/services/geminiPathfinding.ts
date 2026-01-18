@@ -193,24 +193,63 @@ class GeminiNavigationService {
       return imageSource;
     }
 
+    // Extract the actual URL from the require() result
+    let imageUrl: string;
+    
+    if (typeof imageSource === 'string') {
+      imageUrl = imageSource;
+    } else if (imageSource && typeof imageSource === 'object') {
+      // Expo web bundler returns { default: 'url' } or { uri: 'url' }
+      imageUrl = imageSource.default || imageSource.uri || imageSource;
+    } else {
+      throw new Error('Invalid image source format');
+    }
+
+    console.log('[GeminiNavigation] Loading image from:', imageUrl);
+
     // For Expo/React Native, the require() returns a module object
     // We need to fetch the actual image data
     try {
-      const response = await fetch(imageSource);
+      // If the URL is relative, make it absolute
+      let absoluteUrl: string;
+      if (imageUrl.startsWith('http')) {
+        absoluteUrl = imageUrl;
+      } else {
+        // In browser, use window.location.origin
+        if (typeof window !== 'undefined' && window.location) {
+          absoluteUrl = `${window.location.origin}${imageUrl.startsWith('/') ? '' : '/'}${imageUrl}`;
+        } else {
+          // Fallback for non-browser environments
+          absoluteUrl = imageUrl;
+        }
+      }
+      
+      console.log('[GeminiNavigation] Fetching from:', absoluteUrl);
+      
+      const response = await fetch(absoluteUrl);
+      
+      if (!response.ok) {
+        throw new Error(`Failed to fetch image: ${response.status} ${response.statusText}`);
+      }
+      
       const blob = await response.blob();
       
       return new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onloadend = () => {
           const base64 = reader.result as string;
+          console.log('[GeminiNavigation] Image converted to base64, length:', base64.length);
           resolve(base64);
         };
-        reader.onerror = reject;
+        reader.onerror = (error) => {
+          console.error('[GeminiNavigation] FileReader error:', error);
+          reject(error);
+        };
         reader.readAsDataURL(blob);
       });
     } catch (error) {
       console.error('[GeminiNavigation] Error converting image to base64:', error);
-      throw new Error('Failed to load floor plan image');
+      throw new Error(`Failed to load floor plan image: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 
@@ -248,7 +287,7 @@ class GeminiNavigationService {
     console.log(`[GeminiNavigation] Calling Gemini API with inline image...`);
 
     // Use inline image data instead of file upload
-    const model = this.genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
+    const model = this.genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
     const result = await model.generateContent([
       prompt,
       {

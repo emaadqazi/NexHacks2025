@@ -51,7 +51,7 @@ export class NavigationWorkflowService {
     
     // Initialize Gemini service (browser-compatible)
     try {
-      this.gemini = new GeminiNavigationService();
+      this.gemini = new GeminiNavigationService(undefined, 'minimal');
       console.log('[NavigationWorkflow] Gemini service initialized successfully');
     } catch (error) {
       console.error('[NavigationWorkflow] Failed to initialize Gemini service:', error);
