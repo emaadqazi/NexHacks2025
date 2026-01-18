@@ -8,7 +8,10 @@
     "tunnel": "expo start --web --tunnel"
   },
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
     "@overshoot/sdk": "^0.1.0-alpha.2",
+    "commander": "^14.0.2",
+    "dotenv": "^17.2.3",
     "expo": "~54.0.31",
     "expo-status-bar": "~3.0.9",
     "react": "18.3.1",

@@ -5,10 +5,11 @@
  */
 
 import React, { useState, useRef, useEffect } from 'react';
-import { View, StyleSheet, Text, TouchableOpacity, Platform } from 'react-native';
+import { View, StyleSheet, Text, TouchableOpacity, Platform, ScrollView, ActivityIndicator } from 'react-native';
 import OvershootService, { DetectionResponse } from '../services/OvershootService';
 import ElevenLabsService from '../services/ElevenLabsTTS';
 import WisprFlowService from '../services/WisprFlow';
+import NavigationWorkflow, { NavigationState } from '../services/NavigationWorkflow';
 
 // Throttle config
 const SPEECH_INTERVAL_MS = 4000; // 2 seconds between announcements
@@ -81,6 +82,12 @@ const CameraScreen = ({ onBack }: { onBack: () => void }) => {
   const [isListening, setIsListening] = useState(false);
   const [userCommand, setUserCommand] = useState<string | null>(null);
   
+  // Navigation workflow state
+  const [navStatus, setNavStatus] = useState<'idle' | 'listening' | 'verifying' | 'loading' | 'navigating'>('idle');
+  const [navigationSteps, setNavigationSteps] = useState<string | null>(null);
+  const [transcribedQuery, setTranscribedQuery] = useState<string | null>(null);
+  const [navLoading, setNavLoading] = useState(false);
+  
   // Throttle tracking
   const lastSpokenTimeRef = useRef<number>(0);
   const lastSpokenTextRef = useRef<string>('');
@@ -93,6 +100,7 @@ const CameraScreen = ({ onBack }: { onBack: () => void }) => {
       }
       ElevenLabsService.stop();
       WisprFlowService.cancelRecording();
+      NavigationWorkflow.stopNavigation();
     };
   }, [isStreaming]);
 
@@ -264,6 +272,115 @@ const CameraScreen = ({ onBack }: { onBack: () => void }) => {
     }
   };
 
+  // Navigation workflow callbacks - defined once
+  const navCallbacks = {
+    onStateChange: (state: NavigationState) => {
+      if (state.status === 'verifying') setNavStatus('verifying');
+      else if (state.status === 'loading') {
+        setNavStatus('loading');
+        setNavLoading(true);
+      } else if (state.status === 'navigating') {
+        setNavStatus('navigating');
+        setNavLoading(false);
+      } else if (state.status === 'error') {
+        setNavStatus('idle');
+        setNavLoading(false);
+        setError(state.error || 'Navigation failed');
+      }
+    },
+    onTranscriptionReady: (query: string) => {
+      setTranscribedQuery(query);
+      setNavStatus('verifying');
+    },
+    onNavigationReady: (steps: string) => {
+      setNavigationSteps(steps);
+      setNavStatus('navigating');
+      setNavLoading(false);
+      
+      // Speak the directions
+      ElevenLabsService.speak("Here are your directions. " + steps.substring(0, 400));
+      
+      // Get camera stream from workflow - camera activates NOW after Gemini response
+      const stream = NavigationWorkflow.getVideoStream();
+      if (stream) {
+        setMediaStream(stream);
+        setIsStreaming(true);
+      }
+    },
+    onVisionUpdate: (result: DetectionResponse) => {
+      setResults(result);
+      // Auto-speak with throttling
+      if (autoSpeak && result.rawResult) {
+        const now = Date.now();
+        if (now - lastSpokenTimeRef.current >= SPEECH_INTERVAL_MS && 
+            result.rawResult !== lastSpokenTextRef.current &&
+            !ElevenLabsService.isCurrentlySpeaking()) {
+          lastSpokenTimeRef.current = now;
+          lastSpokenTextRef.current = result.rawResult;
+          ElevenLabsService.speak(result.rawResult);
+        }
+      }
+    },
+    onError: (err: string) => {
+      setError(err);
+      setNavStatus('idle');
+      setNavLoading(false);
+      ElevenLabsService.speak(err);
+    },
+  };
+
+  // Handle navigation workflow button
+  const handleNavigatePress = async () => {
+    if (navStatus === 'listening') {
+      // Stop listening and show verification
+      await NavigationWorkflow.stopListeningAndVerify();
+    } else if (navStatus === 'navigating') {
+      // End navigation
+      await NavigationWorkflow.stopNavigation();
+      setNavStatus('idle');
+      setNavigationSteps(null);
+      setTranscribedQuery(null);
+      await ElevenLabsService.speak("Navigation ended.");
+    } else if (navStatus === 'idle') {
+      // Start the workflow - begin recording
+      setNavStatus('listening');
+      await ElevenLabsService.speak("Describe where you want to go. For example: I'm on floor two, get me from the fitness center to the activities room.");
+      
+      const started = await NavigationWorkflow.startListening(navCallbacks);
+      
+      if (!started) {
+        setNavStatus('idle');
+        setError('Could not start navigation');
+      }
+    }
+  };
+
+  // User confirmed transcription - start navigation
+  const handleStartNavigation = async () => {
+    if (!transcribedQuery) return;
+    
+    setNavStatus('loading');
+    setNavLoading(true);
+    await NavigationWorkflow.confirmAndNavigate(transcribedQuery);
+  };
+
+  // User wants to re-record their destination
+  const handleRerecord = async () => {
+    NavigationWorkflow.cancelVerification();
+    setTranscribedQuery(null);
+    setNavStatus('idle');
+    
+    // Immediately start listening again
+    setNavStatus('listening');
+    await ElevenLabsService.speak("Let's try again. Where would you like to go?");
+    
+    const started = await NavigationWorkflow.startListening(navCallbacks);
+    if (!started) {
+      setNavStatus('idle');
+      setError('Could not start navigation');
+    }
+  };
+
   return (
     <View style={styles.cameraContainer}>
       {/* Camera Preview - Full Screen */}
@@ -318,7 +435,55 @@ const CameraScreen = ({ onBack }: { onBack: () => void }) => {
         </View>
       )}
 
-      {/* Listening Indicator */}
+      {/* Navigation Steps Panel */}
+      {navigationSteps && (
+        <View style={styles.navStepsPanel}>
+          <View style={styles.navStepsHeader}>
+            <Text style={styles.navStepsTitle}>📍 Directions</Text>
+            <TouchableOpacity onPress={() => setNavigationSteps(null)}>
+              <Text style={styles.navStepsClose}>✕</Text>
+            </TouchableOpacity>
+          </View>
+          <ScrollView style={styles.navStepsScroll}>
+            <Text style={styles.navStepsText}>{navigationSteps}</Text>
+          </ScrollView>
+        </View>
+      )}
+
+      {/* Navigation Workflow Status - Listening */}
+      {navStatus === 'listening' && (
+        <View style={styles.listeningOverlay}>
+          <Text style={styles.listeningIcon}>🗺️</Text>
+          <Text style={styles.listeningText}>Listening for destination...</Text>
+          <Text style={styles.listeningHint}>Tap Stop when done speaking</Text>
+        </View>
+      )}
+
+      {/* Verification Modal */}
+      {navStatus === 'verifying' && transcribedQuery && (
+        <View style={styles.verificationModal}>
+          <Text style={styles.verificationTitle}>Is this correct?</Text>
+          <Text style={styles.verificationQuery}>"{transcribedQuery}"</Text>
+          <View style={styles.verificationButtons}>
+            <TouchableOpacity style={styles.rerecordButton} onPress={handleRerecord}>
+              <Text style={styles.rerecordButtonText}>Re-record</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.startNavButton} onPress={handleStartNavigation}>
+              <Text style={styles.startNavButtonText}>Start Navigation</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
+      {/* Loading Overlay */}
+      {navStatus === 'loading' && (
+        <View style={styles.loadingOverlay}>
+          <ActivityIndicator size="large" color="#fff" />
+          <Text style={styles.loadingText}>Generating directions...</Text>
+        </View>
+      )}
+
+      {/* Listening Indicator (simple voice commands) */}
       {isListening && (
         <View style={styles.listeningOverlay}>
           <Text style={styles.listeningIcon}>🎤</Text>
@@ -326,6 +491,32 @@ const CameraScreen = ({ onBack }: { onBack: () => void }) => {
           <Text style={styles.listeningHint}>Tap again to stop</Text>
         </View>
       )}
+
+      {/* Navigate Button - Above Controls */}
+      <View style={styles.navButtonRow}>
+        <TouchableOpacity
+          style={[
+            styles.navButton,
+            navStatus === 'listening' && styles.navButtonListening,
+            navStatus === 'navigating' && styles.navButtonActive,
+          ]}
+          onPress={handleNavigatePress}
+          disabled={navStatus === 'verifying' || navStatus === 'loading'}
+        >
+          <Text style={styles.navButtonIcon}>
+            {navStatus === 'listening' ? '⏹️' : 
+             navStatus === 'navigating' ? '🧭' : 
+             navStatus === 'verifying' ? '✓' :
+             navStatus === 'loading' ? '⏳' : '🗺️'}
+          </Text>
+          <Text style={styles.navButtonText}>
+            {navStatus === 'listening' ? 'Stop' : 
+             navStatus === 'verifying' ? 'Verify' :
+             navStatus === 'loading' ? 'Loading...' :
+             navStatus === 'navigating' ? 'End Nav' : 'Navigate'}
+          </Text>
+        </TouchableOpacity>
+      </View>
 
       {/* Bottom Controls */}
       <View style={styles.controls}>
@@ -551,7 +742,7 @@ const styles = StyleSheet.create({
   // Results Overlay
   resultsOverlay: {
     position: 'absolute',
-    bottom: 160,
+    bottom: 200,
     left: 24,
     right: 24,
     backgroundColor: 'rgba(0,0,0,0.85)',
@@ -591,6 +782,158 @@ const styles = StyleSheet.create({
   listeningHint: {
     color: 'rgba(255,255,255,0.7)',
     fontSize: 14,
+  },
+
+  // Verification Modal
+  verificationModal: {
+    position: 'absolute',
+    top: '30%',
+    left: 24,
+    right: 24,
+    backgroundColor: 'rgba(0, 0, 0, 0.95)',
+    borderRadius: 20,
+    padding: 24,
+    alignItems: 'center',
+    zIndex: 25,
+    borderWidth: 2,
+    borderColor: 'rgba(0, 122, 255, 0.5)',
+  },
+  verificationTitle: {
+    color: '#fff',
+    fontSize: 22,
+    fontWeight: '600',
+    marginBottom: 16,
+  },
+  verificationQuery: {
+    color: '#fff',
+    fontSize: 18,
+    fontStyle: 'italic',
+    textAlign: 'center',
+    marginBottom: 24,
+    paddingHorizontal: 10,
+    lineHeight: 26,
+  },
+  verificationButtons: {
+    flexDirection: 'row',
+    gap: 16,
+  },
+  rerecordButton: {
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    paddingVertical: 14,
+    paddingHorizontal: 24,
+    borderRadius: 25,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+  },
+  rerecordButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  startNavButton: {
+    backgroundColor: 'rgba(52, 199, 89, 0.9)',
+    paddingVertical: 14,
+    paddingHorizontal: 24,
+    borderRadius: 25,
+  },
+  startNavButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+
+  // Loading Overlay
+  loadingOverlay: {
+    position: 'absolute',
+    top: '40%',
+    left: 24,
+    right: 24,
+    backgroundColor: 'rgba(0, 0, 0, 0.9)',
+    borderRadius: 20,
+    padding: 40,
+    alignItems: 'center',
+    zIndex: 25,
+  },
+  loadingText: {
+    color: '#fff',
+    fontSize: 20,
+    fontWeight: '600',
+    marginTop: 20,
+  },
+
+  // Navigate Button Row
+  navButtonRow: {
+    position: 'absolute',
+    bottom: 130,
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    zIndex: 10,
+  },
+  navButton: {
+    backgroundColor: 'rgba(0, 122, 255, 0.9)',
+    paddingVertical: 14,
+    paddingHorizontal: 28,
+    borderRadius: 25,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  navButtonListening: {
+    backgroundColor: 'rgba(255, 59, 48, 0.9)',
+  },
+  navButtonActive: {
+    backgroundColor: 'rgba(52, 199, 89, 0.9)',
+  },
+  navButtonIcon: {
+    fontSize: 20,
+  },
+  navButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+
+  // Navigation Steps Panel
+  navStepsPanel: {
+    position: 'absolute',
+    top: 170,
+    left: 16,
+    right: 16,
+    maxHeight: '45%',
+    backgroundColor: 'rgba(0, 0, 0, 0.92)',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(0, 122, 255, 0.5)',
+    zIndex: 15,
+  },
+  navStepsHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  navStepsTitle: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  navStepsClose: {
+    color: '#fff',
+    fontSize: 20,
+    padding: 4,
+  },
+  navStepsScroll: {
+    maxHeight: 300,
+  },
+  navStepsText: {
+    color: '#fff',
+    fontSize: 15,
+    lineHeight: 22,
+    padding: 14,
   },
 
   // Bottom Controls
