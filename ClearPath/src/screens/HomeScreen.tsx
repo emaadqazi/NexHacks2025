@@ -2,18 +2,187 @@
  * ClearPath - Indoor Navigation for Everyone
  * 
  * Web-only implementation using Overshoot SDK + ElevenLabs TTS + WisprFlow STT
+ * Optimized for iOS Safari via HTTPS tunnel
  */
 
 import React, { useState, useRef, useEffect } from 'react';
-import { View, StyleSheet, Text, TouchableOpacity, Platform } from 'react-native';
+import { View, StyleSheet, Text, TouchableOpacity, Platform, ScrollView } from 'react-native';
 import OvershootService, { DetectionResponse } from '../services/OvershootService';
 import ElevenLabsService from '../services/ElevenLabsTTS';
 import WisprFlowService from '../services/WisprFlow';
 
 // Throttle config
-const SPEECH_INTERVAL_MS = 4000; // 2 seconds between announcements
+const SPEECH_INTERVAL_MS = 4000; // 4 seconds between announcements
 
-// Video element for displaying camera stream
+// ============= DIAGNOSTICS PANEL =============
+interface DiagnosticsInfo {
+  url: string;
+  isHttps: boolean;
+  hasGetUserMedia: boolean;
+  hasMediaRecorder: boolean;
+  supportedMimeTypes: string[];
+  hasSpeechRecognition: boolean;
+  hasSpeechSynthesis: boolean;
+  lastError: string | null;
+  overshootKey: boolean;
+  elevenLabsKey: boolean;
+  wisprKey: boolean;
+}
+
+const getDiagnostics = (): DiagnosticsInfo => {
+  const info: DiagnosticsInfo = {
+    url: '',
+    isHttps: false,
+    hasGetUserMedia: false,
+    hasMediaRecorder: false,
+    supportedMimeTypes: [],
+    hasSpeechRecognition: false,
+    hasSpeechSynthesis: false,
+    lastError: null,
+    overshootKey: false,
+    elevenLabsKey: false,
+    wisprKey: false,
+  };
+
+  if (Platform.OS === 'web' && typeof window !== 'undefined') {
+    info.url = window.location.href;
+    info.isHttps = window.location.protocol === 'https:';
+    info.hasGetUserMedia = !!(navigator.mediaDevices?.getUserMedia);
+    info.hasMediaRecorder = typeof MediaRecorder !== 'undefined';
+    
+    // Check supported mime types
+    if (info.hasMediaRecorder) {
+      const mimeTypes = [
+        'audio/mp4',
+        'audio/mp4;codecs=mp4a.40.2',
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/ogg;codecs=opus',
+      ];
+      info.supportedMimeTypes = mimeTypes.filter(type => {
+        try {
+          return MediaRecorder.isTypeSupported(type);
+        } catch {
+          return false;
+        }
+      });
+    }
+    
+    // Check for Speech Recognition - more robust check for iOS Safari
+    // On iOS, webkitSpeechRecognition might not always be directly accessible
+    // Try multiple methods to detect it
+    try {
+      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      if (SpeechRecognition) {
+        // Try to instantiate it to verify it actually works
+        // Don't actually instantiate in diagnostic mode, just check if constructor exists
+        info.hasSpeechRecognition = typeof SpeechRecognition === 'function';
+      } else {
+        // Also check in webkit namespace (some iOS versions)
+        info.hasSpeechRecognition = !!(window as any).webkit?.SpeechRecognition;
+      }
+    } catch {
+      // If check fails, assume not available
+      info.hasSpeechRecognition = false;
+    }
+    
+    // Fallback: Use WisprFlowService's method if direct check fails
+    if (!info.hasSpeechRecognition && WisprFlowService.isSpeechRecognitionAvailable()) {
+      info.hasSpeechRecognition = true;
+    }
+    
+    info.hasSpeechSynthesis = 'speechSynthesis' in window;
+  }
+
+  // Check API keys
+  info.overshootKey = OvershootService.hasApiKey();
+  info.elevenLabsKey = ElevenLabsService.hasApiKey();
+  info.wisprKey = WisprFlowService.hasApiKey();
+
+  return info;
+};
+
+const DiagnosticsPanel = ({ 
+  visible, 
+  onClose, 
+  lastError 
+}: { 
+  visible: boolean; 
+  onClose: () => void;
+  lastError: string | null;
+}) => {
+  const [info, setInfo] = useState<DiagnosticsInfo | null>(null);
+
+  useEffect(() => {
+    if (visible) {
+      const diagnostics = getDiagnostics();
+      diagnostics.lastError = lastError;
+      setInfo(diagnostics);
+    }
+  }, [visible, lastError]);
+
+  if (!visible || !info) return null;
+
+  const StatusBadge = ({ ok, label }: { ok: boolean; label: string }) => (
+    <View style={[styles.diagBadge, ok ? styles.diagBadgeOk : styles.diagBadgeFail]}>
+      <Text style={styles.diagBadgeText}>{ok ? '✓' : '✗'} {label}</Text>
+    </View>
+  );
+
+  return (
+    <View style={styles.diagOverlay}>
+      <View style={styles.diagPanel}>
+        <View style={styles.diagHeader}>
+          <Text style={styles.diagTitle}>📊 Diagnostics</Text>
+          <TouchableOpacity onPress={onClose}>
+            <Text style={styles.diagClose}>✕</Text>
+          </TouchableOpacity>
+        </View>
+        
+        <ScrollView style={styles.diagContent}>
+          <Text style={styles.diagSection}>Connection</Text>
+          <Text style={styles.diagUrl} numberOfLines={2}>{info.url}</Text>
+          <View style={styles.diagRow}>
+            <StatusBadge ok={info.isHttps} label="HTTPS" />
+          </View>
+
+          <Text style={styles.diagSection}>Browser APIs</Text>
+          <View style={styles.diagRow}>
+            <StatusBadge ok={info.hasGetUserMedia} label="Camera" />
+            <StatusBadge ok={info.hasMediaRecorder} label="MediaRecorder" />
+          </View>
+          <View style={styles.diagRow}>
+            <StatusBadge ok={info.hasSpeechRecognition} label="SpeechRecognition" />
+            <StatusBadge ok={info.hasSpeechSynthesis} label="SpeechSynthesis" />
+          </View>
+
+          {info.supportedMimeTypes.length > 0 && (
+            <>
+              <Text style={styles.diagSection}>Supported Audio Formats</Text>
+              <Text style={styles.diagMime}>{info.supportedMimeTypes.join(', ') || 'None'}</Text>
+            </>
+          )}
+
+          <Text style={styles.diagSection}>API Keys</Text>
+          <View style={styles.diagRow}>
+            <StatusBadge ok={info.overshootKey} label="Overshoot" />
+            <StatusBadge ok={info.elevenLabsKey} label="ElevenLabs" />
+            <StatusBadge ok={info.wisprKey} label="Wispr" />
+          </View>
+
+          {info.lastError && (
+            <>
+              <Text style={styles.diagSection}>Last Error</Text>
+              <Text style={styles.diagError}>{info.lastError}</Text>
+            </>
+          )}
+        </ScrollView>
+      </View>
+    </View>
+  );
+};
+
+// ============= VIDEO PREVIEW =============
 const VideoPreview = ({ mediaStream }: { mediaStream: MediaStream | null }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -49,8 +218,10 @@ const VideoPreview = ({ mediaStream }: { mediaStream: MediaStream | null }) => {
   );
 };
 
-// Landing Page Component
+// ============= LANDING PAGE =============
 const LandingPage = ({ onStart }: { onStart: () => void }) => {
+  const [showDiag, setShowDiag] = useState(false);
+
   return (
     <View style={styles.landingContainer}>
       <View style={styles.logoContainer}>
@@ -63,12 +234,26 @@ const LandingPage = ({ onStart }: { onStart: () => void }) => {
         <Text style={styles.startButtonText}>Start</Text>
       </TouchableOpacity>
 
+      {/* Diagnostics button */}
+      <TouchableOpacity 
+        style={styles.diagButton} 
+        onPress={() => setShowDiag(true)}
+      >
+        <Text style={styles.diagButtonText}>📊 Diagnostics</Text>
+      </TouchableOpacity>
+
       <Text style={styles.footer}>NexHacks 2025</Text>
+
+      <DiagnosticsPanel 
+        visible={showDiag} 
+        onClose={() => setShowDiag(false)}
+        lastError={null}
+      />
     </View>
   );
 };
 
-// Camera/Detection Screen Component
+// ============= CAMERA SCREEN =============
 const CameraScreen = ({ onBack }: { onBack: () => void }) => {
   const [isStreaming, setIsStreaming] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -76,6 +261,7 @@ const CameraScreen = ({ onBack }: { onBack: () => void }) => {
   const [error, setError] = useState<string | null>(null);
   const [mediaStream, setMediaStream] = useState<MediaStream | null>(null);
   const [autoSpeak, setAutoSpeak] = useState(true);
+  const [showDiag, setShowDiag] = useState(false);
   
   // Voice command state
   const [isListening, setIsListening] = useState(false);
@@ -96,7 +282,7 @@ const CameraScreen = ({ onBack }: { onBack: () => void }) => {
     };
   }, [isStreaming]);
 
-  // Start streaming with welcome message
+  // ===== FIXED: Start streaming IMMEDIATELY on user gesture =====
   const handleStart = async () => {
     if (!OvershootService.hasApiKey()) {
       setError('Overshoot API key not configured');
@@ -107,15 +293,13 @@ const CameraScreen = ({ onBack }: { onBack: () => void }) => {
     setError(null);
     setResults(null);
 
-    // Welcome message - wait for it to finish
-    await ElevenLabsService.speak("Welcome to ClearPath. Starting navigation. Hold your phone at chest level with camera facing forward. Tap the microphone to ask for directions.");
+    // 1. Unlock audio on user gesture FIRST (synchronous)
+    ElevenLabsService.unlockAudio();
 
-    // Small delay to ensure welcome finishes
-    await new Promise(resolve => setTimeout(resolve, 500));
-
-    console.log('[CameraScreen] Starting Overshoot...');
-
-    const started = await OvershootService.startStreaming((result) => {
+    // 2. Start camera/WebRTC IMMEDIATELY (this is the critical user-gesture call)
+    console.log('[CameraScreen] Starting Overshoot IMMEDIATELY on user gesture...');
+    
+    const streamingPromise = OvershootService.startStreaming((result) => {
       console.log('[CameraScreen] Result:', result);
       setResults(result);
 
@@ -132,7 +316,6 @@ const CameraScreen = ({ onBack }: { onBack: () => void }) => {
         const timeSinceLast = now - lastSpokenTimeRef.current;
         const isDifferentText = result.rawResult !== lastSpokenTextRef.current;
 
-        // Only speak if: enough time passed AND text is different AND not currently speaking
         if (timeSinceLast >= SPEECH_INTERVAL_MS && isDifferentText && !ElevenLabsService.isCurrentlySpeaking()) {
           lastSpokenTimeRef.current = now;
           lastSpokenTextRef.current = result.rawResult;
@@ -141,12 +324,18 @@ const CameraScreen = ({ onBack }: { onBack: () => void }) => {
       }
     });
 
+    // 3. Welcome message runs in parallel (non-blocking)
+    ElevenLabsService.speak("Welcome to ClearPath. Starting navigation.");
+
+    // 4. Wait for stream to actually start
+    const started = await streamingPromise;
+
     if (started) {
       setIsStreaming(true);
       const stream = OvershootService.getMediaStream();
       setMediaStream(stream);
     } else {
-      setError('Failed to start camera');
+      setError('Failed to start camera. Check permissions.');
     }
 
     setIsLoading(false);
@@ -157,8 +346,8 @@ const CameraScreen = ({ onBack }: { onBack: () => void }) => {
     await OvershootService.stopStreaming();
     ElevenLabsService.stop();
     
-    // Goodbye message
-    await ElevenLabsService.speak("Navigation stopped.");
+    // Goodbye message (non-blocking)
+    ElevenLabsService.speak("Navigation stopped.");
     
     setIsStreaming(false);
     setMediaStream(null);
@@ -182,6 +371,9 @@ const CameraScreen = ({ onBack }: { onBack: () => void }) => {
 
   // Handle voice command recording
   const handleMicPress = async () => {
+    // Unlock audio on gesture
+    ElevenLabsService.unlockAudio();
+    
     if (isListening) {
       // Stop recording and process command
       setIsListening(false);
@@ -192,14 +384,14 @@ const CameraScreen = ({ onBack }: { onBack: () => void }) => {
         await processVoiceCommand(command);
       }
     } else {
-      // Start recording
+      // Start recording IMMEDIATELY on user gesture
       const started = await WisprFlowService.startRecording();
       if (started) {
         setIsListening(true);
-        // Provide audio feedback
-        await ElevenLabsService.speak("Listening...");
+        // Audio feedback (non-blocking)
+        ElevenLabsService.speak("Listening...");
         
-        // Auto-stop after 5 seconds if user forgets
+        // Auto-stop after 5 seconds
         setTimeout(async () => {
           if (WisprFlowService.isCurrentlyRecording()) {
             setIsListening(false);
@@ -211,7 +403,13 @@ const CameraScreen = ({ onBack }: { onBack: () => void }) => {
           }
         }, 5000);
       } else {
-        setError('Could not access microphone');
+        const fallbackResult = await WisprFlowService.useFallbackInput();
+        if (fallbackResult) {
+          setUserCommand(fallbackResult);
+          await processVoiceCommand(fallbackResult);
+        } else {
+          setError('Voice input not available on this device');
+        }
       }
     }
   };
@@ -225,10 +423,10 @@ const CameraScreen = ({ onBack }: { onBack: () => void }) => {
     
     // Understand user intent
     if (lowerCommand.includes('exit') || lowerCommand.includes('leave') || lowerCommand.includes('way out')) {
-      response = "Looking for the exit. I'll guide you there.";
-      newPrompt = `Guide the user to find an exit. Look for exit signs, doors leading outside, or emergency exits. Give clear directions like "Exit sign ahead on your right" or "Door to outside on your left".`;
+      response = "Looking for the exit.";
+      newPrompt = `Guide the user to find an exit. Look for exit signs, doors leading outside, or emergency exits. Give clear directions.`;
     } else if (lowerCommand.includes('bathroom') || lowerCommand.includes('restroom') || lowerCommand.includes('toilet') || lowerCommand.includes('washroom')) {
-      response = "Looking for the restroom. I'll help you find it.";
+      response = "Looking for the restroom.";
       newPrompt = `Guide the user to find a bathroom or restroom. Look for restroom signs, bathroom doors, or indicators. Give clear directions.`;
     } else if (lowerCommand.includes('elevator') || lowerCommand.includes('lift')) {
       response = "Looking for an elevator.";
@@ -240,10 +438,10 @@ const CameraScreen = ({ onBack }: { onBack: () => void }) => {
       response = "Looking for a door.";
       newPrompt = `Guide the user to find the nearest door. Look for doors, entrances, or doorways. Give clear directions with distance estimates.`;
     } else if (lowerCommand.includes('help') || lowerCommand.includes('what can')) {
-      response = "You can ask me to find the exit, bathroom, elevator, stairs, or any specific location. Just tap the microphone and speak your request.";
-      newPrompt = ''; // Don't change the prompt
+      response = "You can ask me to find the exit, bathroom, elevator, stairs, or any specific location.";
+      newPrompt = '';
     } else if (lowerCommand.includes('stop') || lowerCommand.includes('cancel') || lowerCommand.includes('nevermind')) {
-      response = "Okay, continuing with general navigation.";
+      response = "Continuing with general navigation.";
       newPrompt = `You are a navigation assistant for a visually impaired person. Give brief, clear directions in 1-2 sentences max. Focus on obstacles, doors, turns, and distance estimates.`;
     } else {
       response = "Looking for " + command + " now.";
@@ -251,7 +449,7 @@ const CameraScreen = ({ onBack }: { onBack: () => void }) => {
     }
     
     // Speak the response
-    await ElevenLabsService.speak(response);
+    ElevenLabsService.speak(response);
     
     // Update Overshoot prompt if needed
     if (newPrompt && isStreaming) {
@@ -273,18 +471,26 @@ const CameraScreen = ({ onBack }: { onBack: () => void }) => {
         <View style={styles.videoPlaceholder}>
           <Text style={styles.placeholderIcon}>📷</Text>
           <Text style={styles.placeholderText}>
-            {isLoading ? 'Starting...' : 'Tap Start to begin'}
+            {isLoading ? 'Starting camera...' : 'Tap Start to begin'}
           </Text>
         </View>
       )}
 
-      {/* Minimal Header */}
+      {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity style={styles.backButton} onPress={handleBack}>
           <Text style={styles.backIcon}>←</Text>
         </TouchableOpacity>
         
         <View style={styles.headerRight}>
+          {/* Diagnostics button */}
+          <TouchableOpacity 
+            style={styles.headerDiagButton}
+            onPress={() => setShowDiag(true)}
+          >
+            <Text style={styles.headerDiagIcon}>📊</Text>
+          </TouchableOpacity>
+          
           {/* Auto-speak toggle */}
           <TouchableOpacity 
             style={[styles.autoSpeakToggle, autoSpeak && styles.autoSpeakActive]}
@@ -311,7 +517,7 @@ const CameraScreen = ({ onBack }: { onBack: () => void }) => {
         </View>
       )}
 
-      {/* Results Overlay - Shows AI description */}
+      {/* Results Overlay */}
       {results?.rawResult && (
         <View style={styles.resultsOverlay}>
           <Text style={styles.resultsText}>{results.rawResult}</Text>
@@ -361,11 +567,18 @@ const CameraScreen = ({ onBack }: { onBack: () => void }) => {
           <Text style={styles.micIcon}>{isListening ? '⏹️' : '🎤'}</Text>
         </TouchableOpacity>
       </View>
+
+      {/* Diagnostics Panel */}
+      <DiagnosticsPanel 
+        visible={showDiag} 
+        onClose={() => setShowDiag(false)}
+        lastError={error}
+      />
     </View>
   );
 };
 
-// Main HomeScreen Component
+// ============= MAIN COMPONENT =============
 export const HomeScreen = () => {
   const [showCamera, setShowCamera] = useState(false);
 
@@ -376,6 +589,7 @@ export const HomeScreen = () => {
   return <LandingPage onStart={() => setShowCamera(true)} />;
 };
 
+// ============= STYLES =============
 const styles = StyleSheet.create({
   // Landing Page
   landingContainer: {
@@ -416,6 +630,15 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '600',
     letterSpacing: 2,
+  },
+  diagButton: {
+    marginTop: 20,
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+  },
+  diagButtonText: {
+    color: '#666',
+    fontSize: 14,
   },
   footer: {
     position: 'absolute',
@@ -482,6 +705,17 @@ const styles = StyleSheet.create({
   backIcon: {
     color: '#fff',
     fontSize: 24,
+  },
+  headerDiagButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  headerDiagIcon: {
+    fontSize: 16,
   },
   autoSpeakToggle: {
     width: 40,
@@ -656,6 +890,93 @@ const styles = StyleSheet.create({
   },
   micIcon: {
     fontSize: 24,
+  },
+
+  // Diagnostics Panel
+  diagOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.8)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 100,
+  },
+  diagPanel: {
+    backgroundColor: '#1a1a1a',
+    borderRadius: 16,
+    width: '90%',
+    maxWidth: 400,
+    maxHeight: '80%',
+    overflow: 'hidden',
+  },
+  diagHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#333',
+  },
+  diagTitle: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: '600',
+  },
+  diagClose: {
+    color: '#888',
+    fontSize: 24,
+    padding: 4,
+  },
+  diagContent: {
+    padding: 16,
+  },
+  diagSection: {
+    color: '#888',
+    fontSize: 12,
+    textTransform: 'uppercase',
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  diagUrl: {
+    color: '#4a9eff',
+    fontSize: 12,
+    marginBottom: 8,
+  },
+  diagRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 4,
+  },
+  diagBadge: {
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 12,
+  },
+  diagBadgeOk: {
+    backgroundColor: 'rgba(52, 199, 89, 0.2)',
+  },
+  diagBadgeFail: {
+    backgroundColor: 'rgba(255, 59, 48, 0.2)',
+  },
+  diagBadgeText: {
+    color: '#fff',
+    fontSize: 12,
+  },
+  diagMime: {
+    color: '#666',
+    fontSize: 11,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  diagError: {
+    color: '#ff6b6b',
+    fontSize: 12,
+    backgroundColor: 'rgba(255,59,48,0.1)',
+    padding: 8,
+    borderRadius: 8,
   },
 });
 
