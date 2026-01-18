@@ -108,18 +108,8 @@ export class OvershootService {
 
     this.onResultCallback = onResult;
 
-    // Structured navigation prompt for blind users
-    const defaultPrompt = prompt || `Analyze the current video frames and provide a status update in the following structured order:
-
-1. URGENT ALERTS: List any obstacles within 5 feet or moving towards the user. (e.g., "Person approaching at 1:00," "Trash can at 11:00").
-
-2. PATH AVAILABILITY: Describe the clear path ahead. (e.g., "Hallway continues straight for 20 feet. Slight turn visible at 2:00").
-
-3. KEY OBJECTS & LANDMARKS: Identify doors, signs, or furniture. Read any text on signs verbatim. (e.g., "Door on right at 2:00 marked 'Room 3305'").
-
-4. TERRAIN: Note any changes in floor level or surface. (e.g., "Descending stairs at 12:00, 5 feet away").
-
-Constraints: If the view is blurry or occluded, say "Visual unclear." If there is no change from the last update, say "Environment stable." Keep the total response under 40 words.`;
+    // Simple navigation prompt
+    const defaultPrompt = prompt || 'Describe what you are seeing in regards to navigation';
 
     // Debug counter for tracking results
     let resultCount = 0;

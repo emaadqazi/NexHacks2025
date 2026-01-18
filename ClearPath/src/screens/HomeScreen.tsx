@@ -2,14 +2,14 @@
  * ClearPath - Indoor Navigation for Everyone
  * 
  * Web-only implementation using Overshoot SDK
- * Access via HTTPS tunnel from iPhone Safari
+ * Clean, minimal UI optimized for iPhone
  */
 
 import React, { useState, useRef, useEffect } from 'react';
-import { View, StyleSheet, Text, TouchableOpacity, ScrollView, Platform } from 'react-native';
+import { View, StyleSheet, Text, TouchableOpacity, Platform } from 'react-native';
 import OvershootService, { DetectionResponse } from '../services/OvershootService';
 
-// Video element ref for displaying camera stream
+// Video element for displaying camera stream
 const VideoPreview: React.FC<{ mediaStream: MediaStream | null }> = ({ mediaStream }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -52,26 +52,11 @@ const LandingPage: React.FC<{ onStart: () => void }> = ({ onStart }) => {
       <View style={styles.logoContainer}>
         <Text style={styles.logoIcon}>🧭</Text>
         <Text style={styles.title}>ClearPath</Text>
-        <Text style={styles.tagline}>Indoor Navigation for Everyone</Text>
-      </View>
-
-      <View style={styles.featuresContainer}>
-        <View style={styles.featureItem}>
-          <Text style={styles.featureIcon}>📷</Text>
-          <Text style={styles.featureText}>Real-time Object Detection</Text>
-        </View>
-        <View style={styles.featureItem}>
-          <Text style={styles.featureIcon}>🎤</Text>
-          <Text style={styles.featureText}>Voice Announcements</Text>
-        </View>
-        <View style={styles.featureItem}>
-          <Text style={styles.featureIcon}>🗺️</Text>
-          <Text style={styles.featureText}>Indoor Navigation</Text>
-        </View>
+        <Text style={styles.tagline}>Indoor Navigation</Text>
       </View>
 
       <TouchableOpacity style={styles.startButton} onPress={onStart}>
-        <Text style={styles.startButtonText}>Start Navigation</Text>
+        <Text style={styles.startButtonText}>Start</Text>
       </TouchableOpacity>
 
       <Text style={styles.footer}>NexHacks 2025</Text>
@@ -79,16 +64,13 @@ const LandingPage: React.FC<{ onStart: () => void }> = ({ onStart }) => {
   );
 };
 
-// Camera/Detection Screen Component
+// Camera/Detection Screen Component - Clean Minimal Design
 const CameraScreen: React.FC<{ onBack: () => void }> = ({ onBack }) => {
   const [isStreaming, setIsStreaming] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [results, setResults] = useState<DetectionResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [mediaStream, setMediaStream] = useState<MediaStream | null>(null);
-  const [isCameraTestMode, setIsCameraTestMode] = useState(false);
-  const [cameraTestStream, setCameraTestStream] = useState<MediaStream | null>(null);
-  const [resultCount, setResultCount] = useState(0);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -96,138 +78,37 @@ const CameraScreen: React.FC<{ onBack: () => void }> = ({ onBack }) => {
       if (isStreaming) {
         OvershootService.stopStreaming();
       }
-      // Clean up camera test stream
-      if (cameraTestStream) {
-        cameraTestStream.getTracks().forEach(track => track.stop());
-      }
     };
-  }, [isStreaming, cameraTestStream]);
-
-  // Test camera directly without Overshoot SDK
-  const handleTestCamera = async () => {
-    if (isCameraTestMode && cameraTestStream) {
-      // Stop the test
-      cameraTestStream.getTracks().forEach(track => track.stop());
-      setCameraTestStream(null);
-      setIsCameraTestMode(false);
-      setError(null);
-      return;
-    }
-
-    setIsLoading(true);
-    setError(null);
-    console.log('[CameraScreen] Testing camera with getUserMedia...');
-
-    try {
-      // Check if getUserMedia is available
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw new Error('getUserMedia is not supported in this browser. Make sure you are using HTTPS.');
-      }
-
-      // Try to get camera access
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: 'environment', // Back camera
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-        },
-        audio: false,
-      });
-
-      console.log('[CameraScreen] Camera test SUCCESS! Stream tracks:', stream.getTracks().map(t => ({
-        kind: t.kind,
-        label: t.label,
-        enabled: t.enabled,
-        readyState: t.readyState,
-      })));
-
-      setCameraTestStream(stream);
-      setIsCameraTestMode(true);
-      setError(null);
-    } catch (err: any) {
-      const errMsg = err?.message || err?.toString() || 'Unknown camera error';
-      console.error('[CameraScreen] Camera test FAILED:', errMsg);
-      console.error('[CameraScreen] Error name:', err?.name);
-      console.error('[CameraScreen] Full error:', err);
-      
-      let userFriendlyMsg = `Camera Error: ${errMsg}`;
-      if (err?.name === 'NotAllowedError') {
-        userFriendlyMsg = 'Camera permission denied. Please allow camera access in your browser settings.';
-      } else if (err?.name === 'NotFoundError') {
-        userFriendlyMsg = 'No camera found. Make sure your device has a camera.';
-      } else if (err?.name === 'NotReadableError') {
-        userFriendlyMsg = 'Camera is in use by another application.';
-      } else if (err?.name === 'OverconstrainedError') {
-        userFriendlyMsg = 'Camera constraints could not be satisfied.';
-      } else if (err?.name === 'SecurityError') {
-        userFriendlyMsg = 'Camera access blocked. HTTPS is required for camera access.';
-      }
-      
-      setError(userFriendlyMsg);
-    }
-    setIsLoading(false);
-  };
+  }, [isStreaming]);
 
   // Start streaming
   const handleStart = async () => {
-    // Auto-stop camera test if active
-    if (isCameraTestMode && cameraTestStream) {
-      console.log('[CameraScreen] Auto-stopping camera test before starting AI...');
-      cameraTestStream.getTracks().forEach(track => track.stop());
-      setCameraTestStream(null);
-      setIsCameraTestMode(false);
-    }
-
     if (!OvershootService.hasApiKey()) {
-      setError('API key not configured. Set EXPO_PUBLIC_OVERSHOOT_API_KEY in your environment.');
+      setError('API key not configured');
       return;
     }
 
     setIsLoading(true);
     setError(null);
     setResults(null);
-    setResultCount(0);
 
-    console.log('[CameraScreen] ====== STARTING OVERSHOOT ======');
-    console.log('[CameraScreen] API Key available:', OvershootService.hasApiKey());
+    console.log('[CameraScreen] Starting Overshoot...');
 
     const started = await OvershootService.startStreaming((result) => {
-      // Increment result counter
-      setResultCount(prev => {
-        const newCount = prev + 1;
-        console.log(`[CameraScreen] ===== RECEIVED RESULT #${newCount} =====`);
-        return newCount;
-      });
-      
-      console.log('[CameraScreen] Result success:', result.success);
-      console.log('[CameraScreen] Result error:', result.error);
-      console.log('[CameraScreen] Raw result:', result.rawResult);
-      console.log('[CameraScreen] Objects count:', result.objects?.length || 0);
-      console.log('[CameraScreen] Processing time:', result.processingTime, 'ms');
-      
+      console.log('[CameraScreen] Result:', result);
       setResults(result);
-
-      // Log formatted results
-      console.log(OvershootService.formatResultsForLog(result));
 
       if (!result.success && result.error) {
         setError(result.error);
       } else {
-        setError(null); // Clear any previous error on success
+        setError(null);
       }
     });
 
-    console.log('[CameraScreen] startStreaming returned:', started);
-
     if (started) {
       setIsStreaming(true);
-      console.log('[CameraScreen] ✅ Stream started, getting media stream...');
-      // Get the media stream for video preview
       const stream = OvershootService.getMediaStream();
-      console.log('[CameraScreen] Media stream:', stream ? 'Available' : 'NULL');
       setMediaStream(stream);
-    } else {
-      console.log('[CameraScreen] ❌ Stream failed to start');
     }
 
     setIsLoading(false);
@@ -235,159 +116,89 @@ const CameraScreen: React.FC<{ onBack: () => void }> = ({ onBack }) => {
 
   // Stop streaming
   const handleStop = async () => {
-    console.log('[CameraScreen] Stopping stream...');
     await OvershootService.stopStreaming();
     setIsStreaming(false);
     setMediaStream(null);
-    console.log('[CameraScreen] Stream stopped. Total results received:', resultCount);
   };
 
   // Speak results
   const handleSpeak = () => {
-    if (!results) {
-      alert('No detection results yet. Start streaming first.');
-      return;
-    }
+    if (!results?.rawResult) return;
 
-    const text = OvershootService.formatResultsForVoice(results);
+    const text = results.rawResult;
     console.log('[Voice]', text);
 
-    // Use browser speech synthesis
     if (Platform.OS === 'web' && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.rate = 0.9;
       window.speechSynthesis.speak(utterance);
-    } else {
-      alert(text);
     }
   };
 
   return (
     <View style={styles.cameraContainer}>
-      {/* Video Preview */}
-      {(isStreaming && mediaStream) || (isCameraTestMode && cameraTestStream) ? (
-        <VideoPreview mediaStream={isStreaming ? mediaStream : cameraTestStream} />
+      {/* Camera Preview - Full Screen */}
+      {isStreaming && mediaStream ? (
+        <VideoPreview mediaStream={mediaStream} />
       ) : (
         <View style={styles.videoPlaceholder}>
+          <Text style={styles.placeholderIcon}>📷</Text>
           <Text style={styles.placeholderText}>
-            {isLoading ? 'Starting camera...' : 'Camera Preview'}
+            {isLoading ? 'Starting...' : 'Tap Start to begin'}
           </Text>
         </View>
       )}
 
-      {/* Top Bar */}
-      <View style={styles.topBar}>
+      {/* Minimal Header */}
+      <View style={styles.header}>
         <TouchableOpacity style={styles.backButton} onPress={onBack}>
-          <Text style={styles.backButtonText}>← Back</Text>
+          <Text style={styles.backIcon}>←</Text>
         </TouchableOpacity>
-        <Text style={styles.titleBar}>ClearPath</Text>
-        <View style={styles.statusIndicator}>
-          <View style={[styles.statusDot, isStreaming && styles.statusDotActive]} />
-          <Text style={styles.statusText}>{isStreaming ? 'Live' : 'Off'}</Text>
-        </View>
-      </View>
-
-      {/* Debug Info - API Key Status */}
-      <View style={styles.debugContainer}>
-        <Text style={styles.debugText}>
-          Key: {OvershootService.hasApiKey() ? '✅' : '❌'}
-        </Text>
-        <Text style={styles.debugText}>
-          Stream: {isStreaming ? '🟢 Live' : '⚫ Off'}
-        </Text>
-        <Text style={styles.debugText}>
-          Results: {resultCount}
-        </Text>
+        
+        <View style={[styles.statusDot, isStreaming && styles.statusDotActive]} />
       </View>
 
       {/* Error Display */}
       {error && (
-        <View style={styles.errorContainer}>
+        <View style={styles.errorBanner}>
           <Text style={styles.errorText}>{error}</Text>
         </View>
       )}
 
-      {/* Results Display */}
-      {results && results.success && (
-        <View style={styles.resultsContainer}>
-          <Text style={styles.resultsTitle}>Detection Results</Text>
-          {results.rawResult ? (
-            <ScrollView style={styles.resultsList}>
-              <Text style={styles.rawResultText}>{results.rawResult}</Text>
-            </ScrollView>
-          ) : results.objects.length > 0 ? (
-            <ScrollView style={styles.resultsList}>
-              {results.objects.map((obj, index) => (
-                <View key={index} style={styles.resultItem}>
-                  <Text style={styles.resultLabel}>{obj.label}</Text>
-                  <Text style={styles.resultDetails}>
-                    {obj.position} • {obj.distance}
-                  </Text>
-                </View>
-              ))}
-            </ScrollView>
-          ) : (
-            <Text style={styles.noResultsText}>No objects detected</Text>
-          )}
-          <Text style={styles.latencyText}>Latency: {results.processingTime}ms</Text>
+      {/* Results Overlay - Shows AI description */}
+      {results?.rawResult && (
+        <View style={styles.resultsOverlay}>
+          <Text style={styles.resultsText}>{results.rawResult}</Text>
         </View>
       )}
 
       {/* Bottom Controls */}
-      <View style={styles.bottomControls}>
-        {/* Test Camera Button - Tests getUserMedia directly */}
+      <View style={styles.controls}>
+        {/* Main Action Button */}
         <TouchableOpacity
-          style={[styles.controlButton, isCameraTestMode && styles.testActiveButton]}
-          onPress={handleTestCamera}
-          disabled={isLoading || isStreaming}
-        >
-          <Text style={styles.controlButtonText}>
-            {isCameraTestMode ? '🎥 Stop Test' : '🔧 Test Camera'}
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[styles.controlButton, isStreaming && styles.stopButton]}
+          style={[
+            styles.mainButton,
+            isStreaming && styles.stopButton,
+            isLoading && styles.loadingButton
+          ]}
           onPress={isStreaming ? handleStop : handleStart}
           disabled={isLoading}
         >
-          <Text style={styles.controlButtonText}>
-            {isLoading ? 'Starting...' : isStreaming ? 'Stop' : 'Start AI'}
+          <Text style={styles.mainButtonText}>
+            {isLoading ? '...' : isStreaming ? 'Stop' : 'Start'}
           </Text>
         </TouchableOpacity>
 
+        {/* Speak Button */}
         <TouchableOpacity
-          style={[styles.controlButton, styles.speakButton]}
+          style={[styles.speakButton, !results?.rawResult && styles.buttonDisabled]}
           onPress={handleSpeak}
-          disabled={!results}
+          disabled={!results?.rawResult}
         >
-          <Text style={styles.controlButtonText}>🔊</Text>
+          <Text style={styles.speakIcon}>🔊</Text>
         </TouchableOpacity>
       </View>
-
-      {/* Instructions */}
-      {!isStreaming && !isLoading && !isCameraTestMode && (
-        <View style={styles.instructionsContainer}>
-          <Text style={styles.instructionsText}>
-            1. First tap "Test Camera" to verify camera access works
-          </Text>
-          <Text style={styles.instructionsSubtext}>
-            2. Then tap "Start AI" for Overshoot detection
-          </Text>
-        </View>
-      )}
-
-      {/* Camera Test Mode Info */}
-      {isCameraTestMode && (
-        <View style={styles.instructionsContainer}>
-          <Text style={[styles.instructionsText, { color: '#34c759' }]}>
-            ✅ Camera access working!
-          </Text>
-          <Text style={styles.instructionsSubtext}>
-            Stop test, then tap "Start AI" to use Overshoot
-          </Text>
-        </View>
-      )}
     </View>
   );
 };
@@ -407,63 +218,49 @@ const styles = StyleSheet.create({
   // Landing Page
   landingContainer: {
     flex: 1,
-    backgroundColor: '#0a0a1a',
+    backgroundColor: '#000',
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 30,
+    paddingHorizontal: 40,
   },
   logoContainer: {
     alignItems: 'center',
-    marginBottom: 50,
+    marginBottom: 80,
   },
   logoIcon: {
-    fontSize: 80,
-    marginBottom: 15,
+    fontSize: 72,
+    marginBottom: 20,
   },
   title: {
-    fontSize: 48,
+    fontSize: 42,
     color: '#fff',
-    fontWeight: '300',
-    letterSpacing: 2,
+    fontWeight: '200',
+    letterSpacing: 4,
   },
   tagline: {
     fontSize: 16,
-    color: '#888',
-    marginTop: 10,
-    letterSpacing: 1,
-  },
-  featuresContainer: {
-    marginBottom: 50,
-  },
-  featureItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginVertical: 12,
-  },
-  featureIcon: {
-    fontSize: 24,
-    marginRight: 15,
-  },
-  featureText: {
-    color: '#ccc',
-    fontSize: 16,
+    color: '#666',
+    marginTop: 12,
+    letterSpacing: 2,
   },
   startButton: {
-    backgroundColor: '#4A90D9',
-    paddingVertical: 18,
-    paddingHorizontal: 60,
-    borderRadius: 30,
+    backgroundColor: '#fff',
+    paddingVertical: 20,
+    paddingHorizontal: 80,
+    borderRadius: 50,
   },
   startButtonText: {
-    color: '#fff',
+    color: '#000',
     fontSize: 20,
-    fontWeight: '500',
+    fontWeight: '600',
+    letterSpacing: 2,
   },
   footer: {
     position: 'absolute',
-    bottom: 40,
-    color: '#444',
-    fontSize: 14,
+    bottom: 50,
+    color: '#333',
+    fontSize: 12,
+    letterSpacing: 1,
   },
 
   // Camera Screen
@@ -480,87 +277,69 @@ const styles = StyleSheet.create({
   },
   videoPlaceholder: {
     flex: 1,
-    backgroundColor: '#1a1a2e',
+    backgroundColor: '#111',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  placeholderText: {
-    color: '#666',
-    fontSize: 18,
+  placeholderIcon: {
+    fontSize: 48,
+    marginBottom: 16,
+    opacity: 0.5,
   },
-  topBar: {
+  placeholderText: {
+    color: '#444',
+    fontSize: 18,
+    letterSpacing: 1,
+  },
+
+  // Minimal Header
+  header: {
     position: 'absolute',
-    top: 50,
+    top: 60,
     left: 0,
     right: 0,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 20,
+    paddingHorizontal: 24,
     zIndex: 10,
   },
   backButton: {
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    borderRadius: 20,
-  },
-  backButtonText: {
-    color: '#fff',
-    fontSize: 16,
-  },
-  titleBar: {
-    color: '#fff',
-    fontSize: 20,
-    fontWeight: '500',
-  },
-  statusIndicator: {
-    flexDirection: 'row',
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 15,
+  },
+  backIcon: {
+    color: '#fff',
+    fontSize: 24,
   },
   statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: '#666',
-    marginRight: 6,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#333',
   },
   statusDotActive: {
     backgroundColor: '#ff3b30',
+    shadowColor: '#ff3b30',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.8,
+    shadowRadius: 8,
   },
-  statusText: {
-    color: '#fff',
-    fontSize: 14,
-  },
-  debugContainer: {
-    position: 'absolute',
-    top: 70,
-    left: 10,
-    right: 10,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    padding: 8,
-    borderRadius: 6,
-    zIndex: 5,
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-  },
-  debugText: {
-    color: '#fff',
-    fontSize: 11,
-    fontFamily: 'monospace',
-  },
-  errorContainer: {
+
+  // Error Banner
+  errorBanner: {
     position: 'absolute',
     top: 120,
-    left: 20,
-    right: 20,
-    backgroundColor: 'rgba(255, 59, 48, 0.9)',
-    padding: 15,
-    borderRadius: 10,
+    left: 24,
+    right: 24,
+    backgroundColor: 'rgba(255, 59, 48, 0.95)',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 12,
     zIndex: 10,
   },
   errorText: {
@@ -568,110 +347,71 @@ const styles = StyleSheet.create({
     fontSize: 14,
     textAlign: 'center',
   },
-  resultsContainer: {
+
+  // Results Overlay
+  resultsOverlay: {
     position: 'absolute',
-    bottom: 150,
-    left: 20,
-    right: 20,
+    bottom: 160,
+    left: 24,
+    right: 24,
     backgroundColor: 'rgba(0,0,0,0.85)',
-    borderRadius: 15,
-    padding: 15,
-    maxHeight: 250,
+    borderRadius: 16,
+    padding: 20,
     zIndex: 10,
   },
-  resultsTitle: {
+  resultsText: {
     color: '#fff',
     fontSize: 18,
-    fontWeight: '600',
-    marginBottom: 10,
-  },
-  resultsList: {
-    maxHeight: 150,
-  },
-  resultItem: {
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    borderRadius: 8,
-    padding: 10,
-    marginBottom: 8,
-  },
-  resultLabel: {
-    color: '#4A90D9',
-    fontSize: 16,
-    fontWeight: '500',
-  },
-  resultDetails: {
-    color: '#aaa',
-    fontSize: 14,
-    marginTop: 4,
-  },
-  rawResultText: {
-    color: '#fff',
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  noResultsText: {
-    color: '#888',
-    fontSize: 14,
+    lineHeight: 26,
     textAlign: 'center',
-    paddingVertical: 20,
   },
-  latencyText: {
-    color: '#666',
-    fontSize: 12,
-    textAlign: 'right',
-    marginTop: 10,
-  },
-  bottomControls: {
+
+  // Bottom Controls
+  controls: {
     position: 'absolute',
     bottom: 50,
     left: 0,
     right: 0,
     flexDirection: 'row',
     justifyContent: 'center',
-    gap: 20,
-    paddingHorizontal: 20,
+    alignItems: 'center',
+    gap: 24,
+    paddingHorizontal: 24,
     zIndex: 10,
   },
-  controlButton: {
-    backgroundColor: '#4A90D9',
-    paddingVertical: 16,
-    paddingHorizontal: 40,
-    borderRadius: 30,
-    minWidth: 120,
+  mainButton: {
+    backgroundColor: '#fff',
+    width: 160,
+    height: 56,
+    borderRadius: 28,
+    justifyContent: 'center',
     alignItems: 'center',
   },
   stopButton: {
     backgroundColor: '#ff3b30',
   },
-  testActiveButton: {
-    backgroundColor: '#34c759',
+  loadingButton: {
+    backgroundColor: '#666',
+  },
+  mainButtonText: {
+    color: '#000',
+    fontSize: 20,
+    fontWeight: '600',
+    letterSpacing: 1,
   },
   speakButton: {
-    backgroundColor: '#34C759',
-  },
-  controlButtonText: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: '500',
-  },
-  instructionsContainer: {
-    position: 'absolute',
-    top: '40%',
-    left: 20,
-    right: 20,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    justifyContent: 'center',
     alignItems: 'center',
-    zIndex: 5,
   },
-  instructionsText: {
-    color: '#fff',
-    fontSize: 18,
-    textAlign: 'center',
-    marginBottom: 10,
+  buttonDisabled: {
+    opacity: 0.3,
   },
-  instructionsSubtext: {
-    color: '#888',
-    fontSize: 14,
-    textAlign: 'center',
+  speakIcon: {
+    fontSize: 24,
   },
 });
 
