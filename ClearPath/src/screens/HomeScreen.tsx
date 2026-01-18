@@ -1,47 +1,85 @@
 /**
- * TEAM MEMBER 4: UI/UX - camera view, voice controls, testing
+ * ClearPath Home Screen
  * 
- * Home Screen - Main navigation interface
- * Landing page with camera functionality
+ * Uses expo-camera for frame capture + WebSocket streaming to Overshoot
+ * Compatible with Expo Go!
  */
 
-import React, { useState } from 'react';
-import { View, StyleSheet, Text, TouchableOpacity } from 'react-native';
-import { CameraView as ExpoCameraView, useCameraPermissions } from 'expo-camera';
+import React, { useState, useEffect, useRef } from 'react';
+import { View, StyleSheet, Text, TouchableOpacity, ScrollView, Platform } from 'react-native';
+import { CameraView, useCameraPermissions } from 'expo-camera';
+import OvershootService, { DetectionResult } from '../services/OvershootService';
 
-// Landing Page Component
+// Landing Page
 const LandingPage: React.FC<{ onStart: () => void }> = ({ onStart }) => {
+  const [debugLogs, setDebugLogs] = useState<string[]>([]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setDebugLogs(OvershootService.getDebugLogs());
+    }, 500);
+    return () => clearInterval(interval);
+  }, []);
+
+  const hasApiKey = OvershootService.hasApiKey();
+
   return (
     <View style={styles.landingContainer}>
-      {/* Background gradient effect */}
-      <View style={styles.backgroundGradient} />
-      
-      {/* Logo and Title */}
       <View style={styles.logoContainer}>
         <Text style={styles.logoIcon}>🧭</Text>
         <Text style={styles.title}>ClearPath</Text>
-        <Text style={styles.tagline}>Indoor Navigation for Everyone</Text>
+        <Text style={styles.tagline}>Indoor Navigation</Text>
       </View>
 
-      {/* Features */}
-      <View style={styles.featuresContainer}>
-        <View style={styles.featureItem}>
-          <Text style={styles.featureIcon}>📷</Text>
-          <Text style={styles.featureText}>Real-time Object Detection</Text>
+      {/* Status Panel */}
+      <View style={styles.statusPanel}>
+        <Text style={styles.statusTitle}>System Status</Text>
+        
+        <View style={styles.statusRow}>
+          <Text style={styles.statusLabel}>Platform:</Text>
+          <Text style={styles.statusValue}>{Platform.OS} 📱</Text>
         </View>
-        <View style={styles.featureItem}>
-          <Text style={styles.featureIcon}>🎤</Text>
-          <Text style={styles.featureText}>Voice Commands</Text>
+        
+        <View style={styles.statusRow}>
+          <Text style={styles.statusLabel}>API Key:</Text>
+          <Text style={[styles.statusValue, hasApiKey && styles.statusGood]}>
+            {hasApiKey ? '✅ Loaded' : '❌ Missing'}
+          </Text>
         </View>
-        <View style={styles.featureItem}>
-          <Text style={styles.featureIcon}>🗺️</Text>
-          <Text style={styles.featureText}>Turn-by-Turn Navigation</Text>
+
+        <View style={styles.statusRow}>
+          <Text style={styles.statusLabel}>Mode:</Text>
+          <Text style={styles.statusValue}>
+            WebSocket + Camera
+          </Text>
         </View>
+
+        {!hasApiKey && (
+          <View style={styles.warningBox}>
+            <Text style={styles.warningTitle}>⚠️ API Key Missing</Text>
+            <Text style={styles.warningText}>
+              Add EXPO_PUBLIC_OVERSHOOT_API_KEY to .env
+            </Text>
+          </View>
+        )}
       </View>
 
-      {/* Start Button */}
-      <TouchableOpacity style={styles.startButton} onPress={onStart}>
-        <Text style={styles.startButtonText}>Click Me</Text>
+      {/* Debug Logs */}
+      <View style={styles.debugPanel}>
+        <Text style={styles.debugTitle}>Debug Logs</Text>
+        <ScrollView style={styles.debugLogs}>
+          {debugLogs.slice(-12).map((log, i) => (
+            <Text key={i} style={styles.debugLogText}>{log}</Text>
+          ))}
+        </ScrollView>
+      </View>
+
+      <TouchableOpacity 
+        style={[styles.startButton, !hasApiKey && styles.startButtonDisabled]} 
+        onPress={onStart}
+        disabled={!hasApiKey}
+      >
+        <Text style={styles.startButtonText}>Start Camera</Text>
       </TouchableOpacity>
 
       <Text style={styles.footer}>NexHacks 2025</Text>
@@ -49,15 +87,127 @@ const LandingPage: React.FC<{ onStart: () => void }> = ({ onStart }) => {
   );
 };
 
-// Camera Screen Component
+// Camera Screen with WebSocket streaming
 const CameraScreen: React.FC<{ onBack: () => void }> = ({ onBack }) => {
   const [permission, requestPermission] = useCameraPermissions();
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [result, setResult] = useState<DetectionResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [debugLogs, setDebugLogs] = useState<string[]>([]);
+  const [framesSent, setFramesSent] = useState(0);
+  const cameraRef = useRef<CameraView>(null);
+  const streamIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Permission still loading
+  // Update logs
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setDebugLogs(OvershootService.getDebugLogs());
+    }, 500);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      stopStreaming();
+    };
+  }, []);
+
+  // Capture and send frames
+  const captureAndSendFrame = async () => {
+    if (!cameraRef.current || !isStreaming) return;
+
+    try {
+      const photo = await cameraRef.current.takePictureAsync({
+        base64: true,
+        quality: 0.5,
+        skipProcessing: true,
+      });
+
+      if (photo?.base64) {
+        OvershootService.sendFrame(photo.base64);
+        setFramesSent(prev => prev + 1);
+      }
+    } catch (e: any) {
+      console.log('Frame capture error:', e.message);
+    }
+  };
+
+  // Start streaming
+  const startStreaming = async () => {
+    setIsConnecting(true);
+    setError(null);
+
+    const connected = await OvershootService.startStreaming(
+      (res) => {
+        setResult(res);
+        if (!res.success && res.error) {
+          setError(res.error);
+        } else {
+          setError(null);
+        }
+      },
+      'Describe what you see for navigation. Identify obstacles, doors, signs, stairs, and clear paths.'
+    );
+
+    setIsConnecting(false);
+
+    if (connected) {
+      setIsStreaming(true);
+      setFramesSent(0);
+      
+      // Start sending frames every 500ms (2 FPS)
+      streamIntervalRef.current = setInterval(() => {
+        captureAndSendFrame();
+      }, 500);
+    }
+  };
+
+  // Stop streaming
+  const stopStreaming = async () => {
+    if (streamIntervalRef.current) {
+      clearInterval(streamIntervalRef.current);
+      streamIntervalRef.current = null;
+    }
+    
+    await OvershootService.stopStreaming();
+    setIsStreaming(false);
+    setResult(null);
+  };
+
+  // Single frame analysis (fallback)
+  const analyzeOneFrame = async () => {
+    if (!cameraRef.current) return;
+
+    setError(null);
+    setIsConnecting(true);
+
+    try {
+      const photo = await cameraRef.current.takePictureAsync({
+        base64: true,
+        quality: 0.6,
+      });
+
+      if (photo?.base64) {
+        const res = await OvershootService.analyzeFrame(photo.base64);
+        setResult(res);
+        if (!res.success && res.error) {
+          setError(res.error);
+        }
+      }
+    } catch (e: any) {
+      setError(e.message);
+    }
+
+    setIsConnecting(false);
+  };
+
+  // Permission loading
   if (!permission) {
     return (
       <View style={styles.cameraContainer}>
-        <Text style={styles.cameraText}>Loading camera...</Text>
+        <Text style={styles.statusText}>Loading camera...</Text>
       </View>
     );
   }
@@ -66,51 +216,106 @@ const CameraScreen: React.FC<{ onBack: () => void }> = ({ onBack }) => {
   if (!permission.granted) {
     return (
       <View style={styles.cameraContainer}>
-        <Text style={styles.cameraText}>Camera Access Needed</Text>
-        <Text style={styles.cameraSubtext}>
-          ClearPath needs camera access for navigation assistance
-        </Text>
+        <Text style={styles.statusText}>Camera Access Required</Text>
+        <Text style={styles.subText}>ClearPath needs camera to detect surroundings</Text>
         <TouchableOpacity style={styles.permissionButton} onPress={requestPermission}>
           <Text style={styles.permissionButtonText}>Grant Permission</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.backButton} onPress={onBack}>
-          <Text style={styles.backButtonText}>← Back</Text>
+        <TouchableOpacity style={styles.backBtnSimple} onPress={onBack}>
+          <Text style={styles.backBtnTextSimple}>← Back</Text>
         </TouchableOpacity>
       </View>
     );
   }
 
-  // Camera view
   return (
     <View style={styles.cameraContainer}>
-      {/* Camera in background */}
-      <ExpoCameraView style={styles.camera} />
-      
-      {/* Top overlay - OUTSIDE camera view for touch events */}
-      <View style={styles.topOverlay}>
-        <TouchableOpacity style={styles.backButtonCamera} onPress={onBack}>
-          <Text style={styles.backButtonCameraText}>← Back</Text>
+      {/* Camera View */}
+      <CameraView 
+        ref={cameraRef}
+        style={styles.camera} 
+        facing="back"
+      />
+
+      {/* Header */}
+      <View style={styles.header}>
+        <TouchableOpacity style={styles.backBtn} onPress={onBack}>
+          <Text style={styles.backBtnText}>←</Text>
         </TouchableOpacity>
-        <Text style={styles.cameraTitle}>ClearPath</Text>
+        <Text style={styles.headerTitle}>ClearPath</Text>
+        <View style={[
+          styles.statusDot, 
+          isStreaming && styles.statusDotStreaming,
+          isConnecting && styles.statusDotConnecting
+        ]} />
       </View>
 
-      {/* Center info */}
-      <View style={styles.centerOverlay}>
-        <Text style={styles.cameraReadyText}>📷 Camera Active</Text>
-        <Text style={styles.cameraHint}>Point at your surroundings</Text>
+      {/* Debug Panel */}
+      <View style={styles.debugOverlay}>
+        <Text style={styles.debugOverlayTitle}>
+          {isStreaming ? `🟢 Streaming (${framesSent} frames)` : '⚫ Ready'}
+        </Text>
+        <Text style={styles.debugOverlayStatus}>
+          WS: {OvershootService.getConnectionStatus()}
+        </Text>
+        <ScrollView style={styles.debugOverlayScroll}>
+          {debugLogs.slice(-6).map((log, i) => (
+            <Text key={i} style={styles.debugOverlayText}>{log}</Text>
+          ))}
+        </ScrollView>
       </View>
 
-      {/* Bottom controls */}
-      <View style={styles.bottomOverlay}>
-        <TouchableOpacity style={styles.voiceButton} onPress={() => console.log('Voice button pressed')}>
-          <Text style={styles.voiceButtonText}>🎤 Tap to Speak</Text>
+      {/* Error Display */}
+      {error && (
+        <View style={styles.errorBox}>
+          <Text style={styles.errorText}>{error}</Text>
+        </View>
+      )}
+
+      {/* Results Display */}
+      {result?.description && (
+        <View style={styles.resultsBox}>
+          <Text style={styles.resultsTitle}>🎯 AI Detection</Text>
+          <ScrollView style={styles.resultsScroll}>
+            <Text style={styles.resultsText}>{result.description}</Text>
+          </ScrollView>
+          {result.processingTime > 0 && (
+            <Text style={styles.latencyText}>{result.processingTime}ms</Text>
+          )}
+        </View>
+      )}
+
+      {/* Controls */}
+      <View style={styles.controls}>
+        {/* Stream button */}
+        <TouchableOpacity
+          style={[
+            styles.streamButton, 
+            isStreaming && styles.stopButton,
+            isConnecting && styles.connectingButton
+          ]}
+          onPress={isStreaming ? stopStreaming : startStreaming}
+          disabled={isConnecting}
+        >
+          <Text style={styles.streamButtonText}>
+            {isConnecting ? '⏳ Connecting...' : isStreaming ? '⏹ Stop' : '▶️ Stream'}
+          </Text>
+        </TouchableOpacity>
+
+        {/* Single capture button */}
+        <TouchableOpacity
+          style={[styles.captureButton, isConnecting && styles.captureButtonDisabled]}
+          onPress={analyzeOneFrame}
+          disabled={isConnecting || isStreaming}
+        >
+          <Text style={styles.captureButtonText}>📸</Text>
         </TouchableOpacity>
       </View>
     </View>
   );
 };
 
-// Main HomeScreen Component
+// Main Component
 export const HomeScreen: React.FC = () => {
   const [showCamera, setShowCamera] = useState(false);
 
@@ -122,81 +327,128 @@ export const HomeScreen: React.FC = () => {
 };
 
 const styles = StyleSheet.create({
-  // Landing Page Styles
+  // Landing Page
   landingContainer: {
     flex: 1,
     backgroundColor: '#0a0a1a',
-    justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 30,
-  },
-  backgroundGradient: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: '#0a0a1a',
+    paddingTop: 50,
+    paddingHorizontal: 20,
   },
   logoContainer: {
     alignItems: 'center',
-    marginBottom: 50,
+    marginBottom: 20,
   },
   logoIcon: {
-    fontSize: 80,
-    marginBottom: 15,
+    fontSize: 50,
+    marginBottom: 8,
   },
   title: {
-    fontSize: 48,
+    fontSize: 32,
     color: '#fff',
-    letterSpacing: 2,
+    fontWeight: '200',
+    letterSpacing: 3,
   },
   tagline: {
-    fontSize: 16,
-    color: '#888',
-    marginTop: 10,
-    letterSpacing: 1,
+    fontSize: 14,
+    color: '#666',
+    marginTop: 5,
   },
-  featuresContainer: {
-    marginBottom: 50,
+
+  // Status Panel
+  statusPanel: {
+    width: '100%',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderRadius: 12,
+    padding: 15,
+    marginBottom: 15,
   },
-  featureItem: {
+  statusTitle: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 10,
+  },
+  statusRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    marginVertical: 12,
+    justifyContent: 'space-between',
+    marginBottom: 6,
   },
-  featureIcon: {
-    fontSize: 24,
-    marginRight: 15,
+  statusLabel: {
+    color: '#888',
+    fontSize: 13,
   },
-  featureText: {
+  statusValue: {
     color: '#ccc',
-    fontSize: 16,
+    fontSize: 13,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
   },
+  statusGood: {
+    color: '#4ade80',
+  },
+  warningBox: {
+    backgroundColor: 'rgba(251, 191, 36, 0.15)',
+    borderRadius: 8,
+    padding: 10,
+    marginTop: 10,
+  },
+  warningTitle: {
+    color: '#fbbf24',
+    fontSize: 13,
+    fontWeight: '600',
+    marginBottom: 5,
+  },
+  warningText: {
+    color: '#fbbf24',
+    fontSize: 11,
+  },
+
+  // Debug Panel
+  debugPanel: {
+    width: '100%',
+    backgroundColor: 'rgba(0,0,0,0.3)',
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 20,
+    maxHeight: 150,
+  },
+  debugTitle: {
+    color: '#666',
+    fontSize: 11,
+    marginBottom: 5,
+  },
+  debugLogs: {
+    flex: 1,
+  },
+  debugLogText: {
+    color: '#555',
+    fontSize: 9,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    marginBottom: 1,
+  },
+
   startButton: {
-    backgroundColor: '#4A90D9',
-    paddingVertical: 18,
-    paddingHorizontal: 60,
-    borderRadius: 30,
-    shadowColor: '#4A90D9',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4,
-    shadowRadius: 10,
-    elevation: 8,
+    backgroundColor: '#22c55e',
+    paddingVertical: 16,
+    paddingHorizontal: 50,
+    borderRadius: 25,
+  },
+  startButtonDisabled: {
+    backgroundColor: '#444',
   },
   startButtonText: {
     color: '#fff',
-    fontSize: 22,
-    letterSpacing: 1,
+    fontSize: 16,
+    fontWeight: '600',
   },
   footer: {
     position: 'absolute',
-    bottom: 40,
+    bottom: 30,
     color: '#444',
-    fontSize: 14,
+    fontSize: 11,
   },
 
-  // Camera Screen Styles
+  // Camera Screen
   cameraContainer: {
     flex: 1,
     backgroundColor: '#000',
@@ -208,98 +460,210 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
   },
-  cameraText: {
+  statusText: {
     color: '#fff',
-    fontSize: 24,
-    marginBottom: 15,
-  },
-  cameraSubtext: {
-    color: '#aaa',
-    fontSize: 16,
+    fontSize: 18,
     textAlign: 'center',
+    marginTop: 100,
+  },
+  subText: {
+    color: '#888',
+    fontSize: 14,
+    textAlign: 'center',
+    marginTop: 10,
     paddingHorizontal: 40,
-    marginBottom: 30,
   },
   permissionButton: {
     backgroundColor: '#4A90D9',
-    paddingVertical: 15,
+    paddingVertical: 12,
     paddingHorizontal: 30,
-    borderRadius: 10,
-    marginBottom: 20,
+    borderRadius: 8,
+    marginTop: 20,
+    alignSelf: 'center',
   },
   permissionButtonText: {
     color: '#fff',
-    fontSize: 18,
+    fontSize: 14,
+    fontWeight: '500',
   },
-  backButton: {
-    paddingVertical: 10,
-    paddingHorizontal: 20,
+  backBtnSimple: {
+    marginTop: 15,
+    alignSelf: 'center',
   },
-  backButtonText: {
+  backBtnTextSimple: {
     color: '#888',
-    fontSize: 16,
+    fontSize: 14,
   },
-  topOverlay: {
+
+  // Header
+  header: {
     position: 'absolute',
-    top: 60,
+    top: 50,
     left: 0,
     right: 0,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 20,
-  },
-  backButtonCamera: {
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    paddingVertical: 8,
+    justifyContent: 'space-between',
     paddingHorizontal: 15,
+    zIndex: 10,
+  },
+  backBtn: {
+    width: 40,
+    height: 40,
     borderRadius: 20,
-  },
-  backButtonCameraText: {
-    color: '#fff',
-    fontSize: 16,
-  },
-  cameraTitle: {
-    flex: 1,
-    color: '#fff',
-    fontSize: 20,
-    textAlign: 'center',
-    marginRight: 60,
-  },
-  centerOverlay: {
-    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  cameraReadyText: {
+  backBtnText: {
     color: '#fff',
-    fontSize: 24,
-    textShadowColor: 'rgba(0,0,0,0.8)',
-    textShadowOffset: { width: 1, height: 1 },
-    textShadowRadius: 5,
+    fontSize: 20,
   },
-  cameraHint: {
-    color: '#ccc',
+  headerTitle: {
+    color: '#fff',
     fontSize: 16,
-    marginTop: 10,
-    textShadowColor: 'rgba(0,0,0,0.8)',
-    textShadowOffset: { width: 1, height: 1 },
-    textShadowRadius: 5,
+    fontWeight: '600',
   },
-  bottomOverlay: {
+  statusDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#666',
+  },
+  statusDotStreaming: {
+    backgroundColor: '#22c55e',
+  },
+  statusDotConnecting: {
+    backgroundColor: '#fbbf24',
+  },
+
+  // Debug Overlay
+  debugOverlay: {
     position: 'absolute',
-    bottom: 50,
+    top: 100,
+    left: 10,
+    right: 10,
+    backgroundColor: 'rgba(0,0,0,0.85)',
+    borderRadius: 8,
+    padding: 10,
+    zIndex: 10,
+    maxHeight: 150,
+  },
+  debugOverlayTitle: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  debugOverlayStatus: {
+    color: '#888',
+    fontSize: 10,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    marginBottom: 6,
+  },
+  debugOverlayScroll: {
+    maxHeight: 80,
+  },
+  debugOverlayText: {
+    color: '#666',
+    fontSize: 9,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    marginBottom: 1,
+  },
+
+  // Error
+  errorBox: {
+    position: 'absolute',
+    bottom: 200,
+    left: 15,
+    right: 15,
+    backgroundColor: 'rgba(239, 68, 68, 0.95)',
+    borderRadius: 8,
+    padding: 12,
+    zIndex: 10,
+  },
+  errorText: {
+    color: '#fff',
+    fontSize: 12,
+    textAlign: 'center',
+  },
+
+  // Results
+  resultsBox: {
+    position: 'absolute',
+    bottom: 100,
+    left: 15,
+    right: 15,
+    backgroundColor: 'rgba(34, 197, 94, 0.95)',
+    borderRadius: 10,
+    padding: 12,
+    zIndex: 10,
+    maxHeight: 150,
+  },
+  resultsTitle: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+    marginBottom: 5,
+  },
+  resultsScroll: {
+    maxHeight: 80,
+  },
+  resultsText: {
+    color: '#fff',
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  latencyText: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 10,
+    textAlign: 'right',
+    marginTop: 5,
+  },
+
+  // Controls
+  controls: {
+    position: 'absolute',
+    bottom: 35,
     left: 0,
     right: 0,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 15,
+    zIndex: 10,
+  },
+  streamButton: {
+    backgroundColor: '#22c55e',
+    paddingVertical: 14,
+    paddingHorizontal: 35,
+    borderRadius: 25,
+  },
+  stopButton: {
+    backgroundColor: '#ef4444',
+  },
+  connectingButton: {
+    backgroundColor: '#fbbf24',
+  },
+  streamButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  captureButton: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: 'rgba(255,255,255,0.3)',
+    justifyContent: 'center',
     alignItems: 'center',
   },
-  voiceButton: {
-    backgroundColor: '#4A90D9',
-    paddingVertical: 18,
-    paddingHorizontal: 40,
-    borderRadius: 30,
+  captureButtonDisabled: {
+    opacity: 0.5,
   },
-  voiceButtonText: {
-    color: '#fff',
-    fontSize: 18,
+  captureButtonText: {
+    fontSize: 22,
   },
 });
+
+export default HomeScreen;
