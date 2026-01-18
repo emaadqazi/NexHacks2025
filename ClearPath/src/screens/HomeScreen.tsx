@@ -9,6 +9,7 @@ import { View, StyleSheet, Text, TouchableOpacity, Platform, ScrollView, Activit
 import OvershootService, { DetectionResponse } from '../services/OvershootService';
 import ElevenLabsService from '../services/ElevenLabsTTS';
 import WisprFlowService from '../services/WisprFlow';
+import { TraceStatsPanel } from '../components/TraceStatsPanel';
 import NavigationWorkflow, { NavigationState } from '../services/NavigationWorkflow';
 
 // Throttle config
@@ -441,6 +442,9 @@ const CameraScreen = ({ onBack }: { onBack: () => void }) => {
         </View>
       )}
 
+      {/* Phoenix Trace Stats - For Arize Demo */}
+      {isStreaming && <TraceStatsPanel />}
+
       {/* Navigation Steps Panel */}
       {navigationSteps && (
         <View style={styles.navStepsPanel}>
@@ -572,6 +576,7 @@ export const HomeScreen = () => {
 
   return <LandingPage onStart={() => setShowCamera(true)} />;
 };
+
 
 const styles = StyleSheet.create({
   // Landing Page

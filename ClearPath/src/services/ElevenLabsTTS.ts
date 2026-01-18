@@ -1,7 +1,7 @@
 /**
  * ElevenLabs Text-to-Speech Service
  */
-
+import { startTTSTrace, endTTSTrace } from './phoenix';
 const API_KEY = process.env.EXPO_PUBLIC_ELEVENLABS_API_KEY || '';
 
 export class ElevenLabsService {
@@ -9,6 +9,7 @@ export class ElevenLabsService {
   private voiceId: string = '21m00Tcm4TlvDq8ikWAM'; // Rachel
   private isSpeaking: boolean = false;
   private currentAudio: HTMLAudioElement | null = null;
+  private currentTrace: any = null;
 
   constructor() {
     this.apiKey = API_KEY.trim();
@@ -30,6 +31,7 @@ export class ElevenLabsService {
 
     // Stop any current speech
     this.stop();
+    this.currentTrace = startTTSTrace(text, this.voiceId); // start trace
 
     try {
       console.log('[ElevenLabs] Speaking:', text.substring(0, 50) + '...');
@@ -56,6 +58,7 @@ export class ElevenLabsService {
 
       if (!response.ok) {
         console.error('[ElevenLabs] API error:', response.status);
+        if (this.currentTrace) endTTSTrace(this.currentTrace, false, `API error: ${response.status}`); // trace error end 
         this.browserSpeak(text); // Fallback
         return false;
       }
@@ -84,6 +87,7 @@ export class ElevenLabsService {
 
     } catch (error) {
       console.error('[ElevenLabs] Error:', error);
+      if (this.currentTrace) endTTSTrace(this.currentTrace, false, String(error)); // end trace with error
       this.browserSpeak(text); // Fallback
       return false;
     }

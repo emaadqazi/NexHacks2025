@@ -13,6 +13,7 @@
  */
 
 import { RealtimeVision } from '@overshoot/sdk';
+import { traceVisionResult } from './phoenix';
 
 // Configuration from environment
 const API_URL = process.env.EXPO_PUBLIC_OVERSHOOT_API_URL || 'https://cluster1.overshoot.ai/api/v0.2';
@@ -111,8 +112,8 @@ export class OvershootService {
     // Simple navigation prompt
     const defaultPrompt = prompt || `You are a navigation assistant for a visually impaired person.
     Give brief, clear directions in 1-2 sentences max. Focus on:
-    - Obstacles or hazards ahead
-    - Doors, turns, intersections
+    - Obstacles or hazards ahead. For these, give specifically a WARNING message: Object head. Keep simple.
+    - Doors, turns, intersections, and especially signs for restrooms, exits, elevators.
     - Distance estimates (steps or feet)
     Example: "Clear path ahead. Door on your left in 5 steps."
     Do NOT describe the scene. Only give actionable navigation instructions.`;
@@ -146,6 +147,13 @@ export class OvershootService {
           
           const processed = this.processResult(result);
           console.log('[OvershootService] Processed result:', JSON.stringify(processed, null, 2));
+
+          traceVisionResult('default', {
+            success: processed.success,
+            rawResult: processed.rawResult,
+            processingTime: processed.processingTime,
+            error: processed.error,
+          });
           
           this.lastResult = processed;
           this.onResultCallback?.(processed);
