@@ -1,19 +1,22 @@
 /**
  * ClearPath - Indoor Navigation for Everyone
  * 
- * Web-only implementation using Overshoot SDK + ElevenLabs TTS + WisprFlow STT
+ * Simplified UI using UnifiedNavigationService
+ * 
+ * Flow:
+ * 1. User taps "Navigate" → speaks destination
+ * 2. User confirms transcription
+ * 3. Navigation auto-starts: first step is spoken, then Overshoot AI activates
+ * 4. Voice commands work (next/previous/repeat/stop)
+ * 5. User taps "End Navigation" or says "stop" to finish
  */
 
 import React, { useState, useRef, useEffect } from 'react';
 import { View, StyleSheet, Text, TouchableOpacity, Platform, ScrollView, ActivityIndicator } from 'react-native';
-import OvershootService, { DetectionResponse } from '../services/OvershootService';
-import ElevenLabsService from '../services/ElevenLabsTTS';
-import WisprFlowService from '../services/WisprFlow';
+import UnifiedNav, { NavigationState, NavigationStatus } from '../services/UnifiedNavigationService';
+import { NavigationStep } from '../services/NavigationStepsManager';
+import { DetectionResponse } from '../services/OvershootService';
 import { TraceStatsPanel } from '../components/TraceStatsPanel';
-import NavigationWorkflow, { NavigationState } from '../services/NavigationWorkflow';
-
-// Throttle config
-const SPEECH_INTERVAL_MS = 4000; // 2 seconds between announcements
 
 // Video element for displaying camera stream
 const VideoPreview = ({ mediaStream }: { mediaStream: MediaStream | null }) => {
@@ -70,407 +73,176 @@ const LandingPage = ({ onStart }: { onStart: () => void }) => {
   );
 };
 
-// Camera/Detection Screen Component
-const CameraScreen = ({ onBack }: { onBack: () => void }) => {
-  const [isStreaming, setIsStreaming] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
-  const [results, setResults] = useState<DetectionResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
+// Navigation Screen Component
+const NavigationScreen = ({ onBack }: { onBack: () => void }) => {
+  // State from UnifiedNavigationService
+  const [navState, setNavState] = useState<NavigationState>(UnifiedNav.getState());
   const [mediaStream, setMediaStream] = useState<MediaStream | null>(null);
-  const [autoSpeak, setAutoSpeak] = useState(true);
-  
-  // Voice command state
-  const [isListening, setIsListening] = useState(false);
-  const [userCommand, setUserCommand] = useState<string | null>(null);
-  
-  // Navigation workflow state
-  const [navStatus, setNavStatus] = useState<'idle' | 'listening' | 'verifying' | 'loading' | 'navigating'>('idle');
-  const [navigationSteps, setNavigationSteps] = useState<string | null>(null);
+  const [visionResult, setVisionResult] = useState<DetectionResponse | null>(null);
+  const [currentSpeech, setCurrentSpeech] = useState<string>('');
+  const [error, setError] = useState<string | null>(null);
   const [transcribedQuery, setTranscribedQuery] = useState<string | null>(null);
-  const [navLoading, setNavLoading] = useState(false);
-  
-  // Throttle tracking
-  const lastSpokenTimeRef = useRef<number>(0);
-  const lastSpokenTextRef = useRef<string>('');
 
-  // Cleanup on unmount
+  // Setup callbacks on mount
   useEffect(() => {
-    return () => {
-      if (isStreaming) {
-        OvershootService.stopStreaming();
-      }
-      ElevenLabsService.stop();
-      WisprFlowService.cancelRecording();
-      NavigationWorkflow.stopNavigation();
-    };
-  }, [isStreaming]);
-
-  // Start streaming with welcome message
-  const handleStart = async () => {
-    if (!OvershootService.hasApiKey()) {
-      setError('Overshoot API key not configured');
-      return;
-    }
-
-    setIsLoading(true);
-    setError(null);
-    setResults(null);
-
-    // Welcome message - wait for it to finish
-    await ElevenLabsService.speak("Welcome to ClearPath. Starting navigation. Hold your phone at chest level with camera facing forward. Tap the microphone to ask for directions.");
-
-    // Small delay to ensure welcome finishes
-    await new Promise(resolve => setTimeout(resolve, 500));
-
-    console.log('[CameraScreen] Starting Overshoot...');
-
-    const started = await OvershootService.startStreaming((result) => {
-      console.log('[CameraScreen] Result:', result);
-      setResults(result);
-
-      if (!result.success && result.error) {
-        // Ignore keepalive/stream errors - these are transient WebRTC issues
-        const errMsg = result.error.toLowerCase();
-        if (errMsg.includes('stream_not_found') || errMsg.includes('keepalive')) {
-          console.log('[CameraScreen] Ignoring transient error:', result.error);
-          return; // Don't show this error
+    UnifiedNav.setCallbacks({
+      onStateChange: (state) => {
+        setNavState(state);
+        
+        // Get video stream when displaying or navigating (camera starts when directions received)
+        if (state.status === 'displaying' || state.status === 'navigating') {
+          const stream = UnifiedNav.getVideoStream();
+          if (stream) {
+            setMediaStream(stream);
+          }
+        } else if (state.status === 'idle' || state.status === 'completed') {
+          // Clear stream when returning to idle
+          setMediaStream(null);
+          setVisionResult(null);
         }
-        setError(result.error);
-        return;
-      }
-
-      setError(null);
-
-      // Auto-speak with throttling
-      if (autoSpeak && result.rawResult) {
-        const now = Date.now();
-        const timeSinceLast = now - lastSpokenTimeRef.current;
-        const isDifferentText = result.rawResult !== lastSpokenTextRef.current;
-
-        // Only speak if: enough time passed AND text is different AND not currently speaking
-        if (timeSinceLast >= SPEECH_INTERVAL_MS && isDifferentText && !ElevenLabsService.isCurrentlySpeaking()) {
-          lastSpokenTimeRef.current = now;
-          lastSpokenTextRef.current = result.rawResult;
-          ElevenLabsService.speak(result.rawResult);
-        }
-      }
+      },
+      onStepChange: (step, index, total) => {
+        console.log(`[NavigationScreen] Step ${index + 1}/${total}: ${step.instruction}`);
+      },
+      onVisionUpdate: (result) => {
+        setVisionResult(result);
+      },
+      onSpeaking: (text) => {
+        setCurrentSpeech(text);
+        // Clear speech display after 4 seconds
+        setTimeout(() => setCurrentSpeech(''), 4000);
+      },
+      onError: (err) => {
+        setError(err);
+        setTimeout(() => setError(null), 5000);
+      },
     });
 
-    if (started) {
-      setIsStreaming(true);
-      const stream = OvershootService.getMediaStream();
-      setMediaStream(stream);
-    } else {
-      setError('Failed to start camera');
+    return () => {
+      // Cleanup on unmount
+      UnifiedNav.reset();
+    };
+  }, []);
+
+  // Handle Navigate button press
+  const handleNavigatePress = async () => {
+    const status = navState.status;
+
+    if (status === 'idle' || status === 'error' || status === 'completed') {
+      // Start listening for destination
+      await UnifiedNav.startListening();
+    } else if (status === 'listening') {
+      // Stop listening and verify
+      const query = await UnifiedNav.stopListeningAndVerify();
+      if (query) {
+        setTranscribedQuery(query);
+      }
+    } else if (status === 'navigating') {
+      // Stop navigation
+      await UnifiedNav.stopNavigation();
+      setMediaStream(null);
+      setVisionResult(null);
     }
-
-    setIsLoading(false);
   };
 
-  // Stop streaming
-  const handleStop = async () => {
-    await OvershootService.stopStreaming();
-    ElevenLabsService.stop();
-    
-    // Goodbye message
-    await ElevenLabsService.speak("Navigation stopped.");
-    
-    setIsStreaming(false);
-    setMediaStream(null);
+  // Handle confirmation of transcription
+  const handleConfirmQuery = async () => {
+    if (transcribedQuery) {
+      setTranscribedQuery(null);
+      await UnifiedNav.requestDirections(transcribedQuery);
+    }
   };
 
-  // Manual speak button
-  const handleSpeak = () => {
-    if (!results?.rawResult) return;
-    ElevenLabsService.speak(results.rawResult);
+  // Handle re-recording
+  const handleRerecord = () => {
+    setTranscribedQuery(null);
+    UnifiedNav.cancelListening();
+    UnifiedNav.startListening();
   };
 
-  // Handle back with cleanup
+  // Handle back button
   const handleBack = () => {
-    if (isStreaming) {
-      OvershootService.stopStreaming();
-      ElevenLabsService.stop();
-    }
-    WisprFlowService.cancelRecording();
+    UnifiedNav.reset();
+    setMediaStream(null);
+    setVisionResult(null);
     onBack();
   };
 
-  // Handle voice command recording
-  const handleMicPress = async () => {
-    if (isListening) {
-      // Stop recording and process command
-      setIsListening(false);
-      const command = await WisprFlowService.stopRecordingAndTranscribe();
-      
-      if (command) {
-        setUserCommand(command);
-        await processVoiceCommand(command);
-      }
-    } else {
-      // Start recording
-      const started = await WisprFlowService.startRecording();
-      if (started) {
-        setIsListening(true);
-        // Provide audio feedback
-        await ElevenLabsService.speak("Listening...");
-        
-        // Auto-stop after 5 seconds if user forgets
-        setTimeout(async () => {
-          if (WisprFlowService.isCurrentlyRecording()) {
-            setIsListening(false);
-            const command = await WisprFlowService.stopRecordingAndTranscribe();
-            if (command) {
-              setUserCommand(command);
-              await processVoiceCommand(command);
-            }
-          }
-        }, 5000);
-      } else {
-        setError('Could not access microphone');
-      }
+  // Get button text and icon based on status
+  const getButtonConfig = () => {
+    switch (navState.status) {
+      case 'listening':
+        return { icon: '⏹️', text: 'Stop Recording', style: styles.navButtonListening };
+      case 'navigating':
+        return { icon: '🛑', text: 'End Navigation', style: styles.navButtonActive };
+      case 'requesting':
+        return { icon: '⏳', text: 'Getting Directions...', style: styles.navButtonDisabled };
+      case 'verifying':
+        return { icon: '✓', text: 'Confirm', style: styles.navButtonDisabled };
+      default:
+        return { icon: '🎤', text: 'Navigate', style: styles.navButton };
     }
   };
 
-  // Process voice command and update navigation
-  const processVoiceCommand = async (command: string) => {
-    const lowerCommand = command.toLowerCase();
-    
-    let response = '';
-    let newPrompt = '';
-    
-    // Understand user intent
-    if (lowerCommand.includes('exit') || lowerCommand.includes('leave') || lowerCommand.includes('way out')) {
-      response = "Looking for the exit. I'll guide you there.";
-      newPrompt = `Guide the user to find an exit. Look for exit signs, doors leading outside, or emergency exits. Give clear directions like "Exit sign ahead on your right" or "Door to outside on your left".`;
-    } else if (lowerCommand.includes('bathroom') || lowerCommand.includes('restroom') || lowerCommand.includes('toilet') || lowerCommand.includes('washroom')) {
-      response = "Looking for the restroom. I'll help you find it.";
-      newPrompt = `Guide the user to find a bathroom or restroom. Look for restroom signs, bathroom doors, or indicators. Give clear directions.`;
-    } else if (lowerCommand.includes('elevator') || lowerCommand.includes('lift')) {
-      response = "Looking for an elevator.";
-      newPrompt = `Guide the user to find an elevator. Look for elevator doors, buttons, or signs. Give clear directions.`;
-    } else if (lowerCommand.includes('stairs') || lowerCommand.includes('stairway') || lowerCommand.includes('staircase')) {
-      response = "Looking for stairs.";
-      newPrompt = `Guide the user to find stairs or a stairwell. Look for stairwell doors, stair signs, or actual stairs. Give clear directions.`;
-    } else if (lowerCommand.includes('door') || lowerCommand.includes('entrance')) {
-      response = "Looking for a door.";
-      newPrompt = `Guide the user to find the nearest door. Look for doors, entrances, or doorways. Give clear directions with distance estimates.`;
-    } else if (lowerCommand.includes('help') || lowerCommand.includes('what can')) {
-      response = "You can ask me to find the exit, bathroom, elevator, stairs, or any specific location. Just tap the microphone and speak your request.";
-      newPrompt = ''; // Don't change the prompt
-    } else if (lowerCommand.includes('stop') || lowerCommand.includes('cancel') || lowerCommand.includes('nevermind')) {
-      response = "Okay, continuing with general navigation.";
-      newPrompt = `You are a navigation assistant for a visually impaired person. Give brief, clear directions in 1-2 sentences max. Focus on obstacles, doors, turns, and distance estimates.`;
-    } else {
-      response = "Looking for " + command + " now.";
-      newPrompt = `The user is looking for: ${command}. Help guide them to find it. Look for signs, doors, or any indication of ${command}. Give clear navigation directions.`;
-    }
-    
-    // Speak the response
-    await ElevenLabsService.speak(response);
-    
-    // Update Overshoot prompt if needed
-    if (newPrompt && isStreaming) {
-      try {
-        await OvershootService.updatePrompt(newPrompt);
-        console.log('[CameraScreen] Prompt updated for:', command);
-      } catch (err) {
-        console.error('[CameraScreen] Failed to update prompt:', err);
-      }
-    }
-  };
-
-  // Navigation workflow callbacks - defined once
-  const navCallbacks = {
-    onStateChange: (state: NavigationState) => {
-      if (state.status === 'verifying') setNavStatus('verifying');
-      else if (state.status === 'loading') {
-        setNavStatus('loading');
-        setNavLoading(true);
-      } else if (state.status === 'navigating') {
-        setNavStatus('navigating');
-        setNavLoading(false);
-      } else if (state.status === 'error') {
-        setNavStatus('idle');
-        setNavLoading(false);
-        setError(state.error || 'Navigation failed');
-      }
-    },
-    onTranscriptionReady: (query: string) => {
-      setTranscribedQuery(query);
-      setNavStatus('verifying');
-    },
-    onNavigationReady: (steps: string) => {
-      setNavigationSteps(steps);
-      setNavStatus('navigating');
-      setNavLoading(false);
-      
-      // Speak the directions
-      ElevenLabsService.speak("Here are your directions. " + steps.substring(0, 400));
-      
-      // Get camera stream from workflow - camera activates NOW after Gemini response
-      const stream = NavigationWorkflow.getVideoStream();
-      if (stream) {
-        setMediaStream(stream);
-        setIsStreaming(true);
-      }
-    },
-    onVisionUpdate: (result: DetectionResponse) => {
-      setResults(result);
-      // Auto-speak with throttling
-      if (autoSpeak && result.rawResult) {
-        const now = Date.now();
-        if (now - lastSpokenTimeRef.current >= SPEECH_INTERVAL_MS && 
-            result.rawResult !== lastSpokenTextRef.current &&
-            !ElevenLabsService.isCurrentlySpeaking()) {
-          lastSpokenTimeRef.current = now;
-          lastSpokenTextRef.current = result.rawResult;
-          ElevenLabsService.speak(result.rawResult);
-        }
-      }
-    },
-    onError: (err: string) => {
-      setError(err);
-      setNavStatus('idle');
-      setNavLoading(false);
-      ElevenLabsService.speak(err);
-    },
-  };
-
-  // Handle navigation workflow button
-  const handleNavigatePress = async () => {
-    if (navStatus === 'listening') {
-      // Stop listening and show verification
-      await NavigationWorkflow.stopListeningAndVerify();
-    } else if (navStatus === 'navigating') {
-      // End navigation
-      await NavigationWorkflow.stopNavigation();
-      setNavStatus('idle');
-      setNavigationSteps(null);
-      setTranscribedQuery(null);
-      await ElevenLabsService.speak("Navigation ended.");
-    } else if (navStatus === 'idle') {
-      // Start the workflow - begin recording
-      setNavStatus('listening');
-      await ElevenLabsService.speak("Describe where you want to go.");
-      
-      const started = await NavigationWorkflow.startListening(navCallbacks);
-      
-      if (!started) {
-        setNavStatus('idle');
-        setError('Could not start navigation');
-      }
-    }
-  };
-
-  // User confirmed transcription - start navigation
-  const handleStartNavigation = async () => {
-    if (!transcribedQuery) return;
-    
-    setNavStatus('loading');
-    setNavLoading(true);
-    await NavigationWorkflow.confirmAndNavigate(transcribedQuery);
-  };
-
-  // User wants to re-record their destination
-  const handleRerecord = async () => {
-    NavigationWorkflow.cancelVerification();
-    setTranscribedQuery(null);
-    setNavStatus('idle');
-    
-    // Immediately start listening again
-    setNavStatus('listening');
-    await ElevenLabsService.speak("Let's try again. Where would you like to go?");
-    
-    const started = await NavigationWorkflow.startListening(navCallbacks);
-    if (!started) {
-      setNavStatus('idle');
-      setError('Could not start navigation');
-    }
-  };
+  const buttonConfig = getButtonConfig();
+  const isNavigating = navState.status === 'navigating';
+  const showCamera = isNavigating && mediaStream;
+  const showSteps = navState.status === 'navigating';
 
   return (
     <View style={styles.cameraContainer}>
-      {/* Camera Preview - Full Screen */}
-      {isStreaming && mediaStream ? (
+      {/* Camera Preview - Shows when displaying directions or navigating */}
+      {showCamera ? (
         <VideoPreview mediaStream={mediaStream} />
       ) : (
         <View style={styles.videoPlaceholder}>
-          <Text style={styles.placeholderIcon}>📷</Text>
+          <Text style={styles.placeholderIcon}>
+            {navState.status === 'listening' ? '🎤' : 
+             navState.status === 'requesting' ? '⏳' : '📍'}
+          </Text>
           <Text style={styles.placeholderText}>
-            {isLoading ? 'Starting...' : 'Tap Start to begin'}
+            {navState.status === 'listening' ? 'Listening for your destination...' :
+             navState.status === 'requesting' ? 'Getting directions...' :
+             'Tap Navigate to begin'}
           </Text>
         </View>
       )}
 
-      {/* Minimal Header */}
+      {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity style={styles.backButton} onPress={handleBack}>
           <Text style={styles.backIcon}>←</Text>
         </TouchableOpacity>
         
         <View style={styles.headerRight}>
-          {/* Auto-speak toggle */}
-          <TouchableOpacity 
-            style={[styles.autoSpeakToggle, autoSpeak && styles.autoSpeakActive]}
-            onPress={() => setAutoSpeak(!autoSpeak)}
-          >
-            <Text style={styles.autoSpeakIcon}>{autoSpeak ? '🔊' : '🔇'}</Text>
-          </TouchableOpacity>
-          
-          <View style={[styles.statusDot, isStreaming && styles.statusDotActive]} />
+          {isNavigating && (
+            <View style={styles.voiceCommandHint}>
+              <Text style={styles.voiceCommandText}>
+                Say: "next" • "previous" • "repeat"
+              </Text>
+            </View>
+          )}
+          <View style={[styles.statusDot, isNavigating && styles.statusDotActive]} />
         </View>
       </View>
 
-      {/* User Command Display */}
-      {userCommand && (
-        <View style={styles.commandBanner}>
-          <Text style={styles.commandText}>🎤 "{userCommand}"</Text>
-        </View>
-      )}
-
-      {/* Error Display */}
+      {/* Error Banner */}
       {error && (
         <View style={styles.errorBanner}>
           <Text style={styles.errorText}>{error}</Text>
         </View>
       )}
 
-      {/* Results Overlay - Shows AI description */}
-      {results?.rawResult && (
-        <View style={styles.resultsOverlay}>
-          <Text style={styles.resultsText}>{results.rawResult}</Text>
-        </View>
-      )}
-
-      {/* Phoenix Trace Stats - For Arize Demo */}
-      {isStreaming && <TraceStatsPanel />}
-
-      {/* Navigation Steps Panel */}
-      {navigationSteps && (
-        <View style={styles.navStepsPanel}>
-          <View style={styles.navStepsHeader}>
-            <Text style={styles.navStepsTitle}>📍 Directions</Text>
-            <TouchableOpacity onPress={() => setNavigationSteps(null)}>
-              <Text style={styles.navStepsClose}>✕</Text>
-            </TouchableOpacity>
-          </View>
-          <ScrollView style={styles.navStepsScroll}>
-            <Text style={styles.navStepsText}>{navigationSteps}</Text>
-          </ScrollView>
-        </View>
-      )}
-
-      {/* Navigation Workflow Status - Listening */}
-      {navStatus === 'listening' && (
-        <View style={styles.listeningOverlay}>
-          <Text style={styles.listeningIcon}>🗺️</Text>
-          <Text style={styles.listeningText}>Listening for destination...</Text>
-          <Text style={styles.listeningHint}>Tap Stop when done speaking</Text>
+      {/* Current Speech Display */}
+      {currentSpeech && (
+        <View style={styles.speechBanner}>
+          <Text style={styles.speechIcon}>🔊</Text>
+          <Text style={styles.speechText}>{currentSpeech}</Text>
         </View>
       )}
 
       {/* Verification Modal */}
-      {navStatus === 'verifying' && transcribedQuery && (
+      {navState.status === 'verifying' && transcribedQuery && (
         <View style={styles.verificationModal}>
           <Text style={styles.verificationTitle}>Is this correct?</Text>
           <Text style={styles.verificationQuery}>"{transcribedQuery}"</Text>
@@ -478,88 +250,91 @@ const CameraScreen = ({ onBack }: { onBack: () => void }) => {
             <TouchableOpacity style={styles.rerecordButton} onPress={handleRerecord}>
               <Text style={styles.rerecordButtonText}>Re-record</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.startNavButton} onPress={handleStartNavigation}>
-              <Text style={styles.startNavButtonText}>Start Navigation</Text>
+            <TouchableOpacity style={styles.confirmButton} onPress={handleConfirmQuery}>
+              <Text style={styles.confirmButtonText}>Get Directions</Text>
             </TouchableOpacity>
           </View>
         </View>
       )}
 
       {/* Loading Overlay */}
-      {navStatus === 'loading' && (
+      {navState.status === 'requesting' && (
         <View style={styles.loadingOverlay}>
           <ActivityIndicator size="large" color="#fff" />
-          <Text style={styles.loadingText}>Generating directions...</Text>
+          <Text style={styles.loadingText}>Getting directions...</Text>
         </View>
       )}
 
-      {/* Listening Indicator (simple voice commands) */}
-      {isListening && (
-        <View style={styles.listeningOverlay}>
-          <Text style={styles.listeningIcon}>🎤</Text>
-          <Text style={styles.listeningText}>Listening...</Text>
-          <Text style={styles.listeningHint}>Tap again to stop</Text>
+      {/* Navigation Steps Panel */}
+      {showSteps && navState.steps.length > 0 && (
+        <View style={styles.navStepsPanel}>
+          <View style={styles.navStepsHeader}>
+            <Text style={styles.navStepsTitle}>
+              📍 Directions {isNavigating && `(${navState.currentStepIndex + 1}/${navState.totalSteps})`}
+            </Text>
+          </View>
+          <ScrollView style={styles.navStepsScroll}>
+            {navState.steps.map((step, index) => (
+              <View 
+                key={index} 
+                style={[
+                  styles.stepItem,
+                  index === navState.currentStepIndex && isNavigating && styles.stepItemCurrent,
+                  index < navState.currentStepIndex && isNavigating && styles.stepItemCompleted,
+                ]}
+              >
+                <Text style={[
+                  styles.stepNumber,
+                  index === navState.currentStepIndex && isNavigating && styles.stepNumberCurrent,
+                ]}>
+                  {index + 1}
+                </Text>
+                <Text style={[
+                  styles.stepText,
+                  index === navState.currentStepIndex && isNavigating && styles.stepTextCurrent,
+                  index < navState.currentStepIndex && isNavigating && styles.stepTextCompleted,
+                ]}>
+                  {step.instruction}
+                </Text>
+              </View>
+            ))}
+          </ScrollView>
+        </View>
+      )}
+    {isNavigating && <TraceStatsPanel />}
+      {/* Vision Results Overlay (during navigation) */}
+      {isNavigating && visionResult?.rawResult && (
+        <View style={styles.visionOverlay}>
+          <Text style={styles.visionText}>{visionResult.rawResult}</Text>
         </View>
       )}
 
-      {/* Navigate Button - Above Controls */}
-      <View style={styles.navButtonRow}>
+      {/* Progress Bar (during navigation) */}
+      {isNavigating && (
+        <View style={styles.progressContainer}>
+          <View style={styles.progressBar}>
+            <View 
+              style={[
+                styles.progressFill, 
+                { width: `${((navState.currentStepIndex + 1) / navState.totalSteps) * 100}%` }
+              ]} 
+            />
+          </View>
+          <Text style={styles.progressText}>
+            Step {navState.currentStepIndex + 1} of {navState.totalSteps}
+          </Text>
+        </View>
+      )}
+
+      {/* Main Action Button */}
+      <View style={styles.bottomControls}>
         <TouchableOpacity
-          style={[
-            styles.navButton,
-            navStatus === 'listening' && styles.navButtonListening,
-            navStatus === 'navigating' && styles.navButtonActive,
-          ]}
+          style={[styles.navButton, buttonConfig.style]}
           onPress={handleNavigatePress}
-          disabled={navStatus === 'verifying' || navStatus === 'loading'}
+          disabled={navState.status === 'requesting' || navState.status === 'verifying'}
         >
-          <Text style={styles.navButtonIcon}>
-            {navStatus === 'listening' ? '⏹️' : 
-             navStatus === 'navigating' ? '🧭' : 
-             navStatus === 'verifying' ? '✓' :
-             navStatus === 'loading' ? '⏳' : '🗺️'}
-          </Text>
-          <Text style={styles.navButtonText}>
-            {navStatus === 'listening' ? 'Stop' : 
-             navStatus === 'verifying' ? 'Verify' :
-             navStatus === 'loading' ? 'Loading...' :
-             navStatus === 'navigating' ? 'End Nav' : 'Navigate'}
-          </Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* Bottom Controls */}
-      <View style={styles.controls}>
-        {/* Manual Speak Button */}
-        <TouchableOpacity
-          style={[styles.speakButton, !results?.rawResult && styles.buttonDisabled]}
-          onPress={handleSpeak}
-          disabled={!results?.rawResult}
-        >
-          <Text style={styles.speakIcon}>🔊</Text>
-        </TouchableOpacity>
-
-        {/* Main Action Button */}
-        <TouchableOpacity
-          style={[
-            styles.mainButton,
-            isStreaming && styles.stopButton,
-            isLoading && styles.loadingButton
-          ]}
-          onPress={isStreaming ? handleStop : handleStart}
-          disabled={isLoading}
-        >
-          <Text style={[styles.mainButtonText, isStreaming && styles.stopButtonText]}>
-            {isLoading ? '...' : isStreaming ? 'Stop' : 'Start'}
-          </Text>
-        </TouchableOpacity>
-
-        {/* Mic Button for Voice Commands */}
-        <TouchableOpacity
-          style={[styles.micButton, isListening && styles.micButtonActive]}
-          onPress={handleMicPress}
-        >
-          <Text style={styles.micIcon}>{isListening ? '⏹️' : '🎤'}</Text>
+          <Text style={styles.navButtonIcon}>{buttonConfig.icon}</Text>
+          <Text style={styles.navButtonText}>{buttonConfig.text}</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -568,13 +343,13 @@ const CameraScreen = ({ onBack }: { onBack: () => void }) => {
 
 // Main HomeScreen Component
 export const HomeScreen = () => {
-  const [showCamera, setShowCamera] = useState(false);
+  const [showNavigation, setShowNavigation] = useState(false);
 
-  if (showCamera) {
-    return <CameraScreen onBack={() => setShowCamera(false)} />;
+  if (showNavigation) {
+    return <NavigationScreen onBack={() => setShowNavigation(false)} />;
   }
 
-  return <LandingPage onStart={() => setShowCamera(true)} />;
+  return <LandingPage onStart={() => setShowNavigation(true)} />;
 };
 
 
@@ -627,7 +402,7 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
   },
 
-  // Camera Screen
+  // Navigation Screen
   cameraContainer: {
     flex: 1,
     backgroundColor: '#000',
@@ -646,14 +421,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   placeholderIcon: {
-    fontSize: 48,
+    fontSize: 64,
     marginBottom: 16,
-    opacity: 0.5,
+    opacity: 0.7,
   },
   placeholderText: {
-    color: '#444',
+    color: '#666',
     fontSize: 18,
     letterSpacing: 1,
+    textAlign: 'center',
+    paddingHorizontal: 40,
   },
 
   // Header
@@ -685,19 +462,16 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 24,
   },
-  autoSpeakToggle: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
+  voiceCommandHint: {
+    backgroundColor: 'rgba(0, 122, 255, 0.8)',
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 16,
   },
-  autoSpeakActive: {
-    backgroundColor: 'rgba(0, 122, 255, 0.7)',
-  },
-  autoSpeakIcon: {
-    fontSize: 18,
+  voiceCommandText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '500',
   },
   statusDot: {
     width: 12,
@@ -706,33 +480,14 @@ const styles = StyleSheet.create({
     backgroundColor: '#333',
   },
   statusDotActive: {
-    backgroundColor: '#ff3b30',
-    shadowColor: '#ff3b30',
+    backgroundColor: '#34C759',
+    shadowColor: '#34C759',
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 0.8,
     shadowRadius: 8,
   },
 
-  // Command Banner
-  commandBanner: {
-    position: 'absolute',
-    top: 120,
-    left: 24,
-    right: 24,
-    backgroundColor: 'rgba(0, 122, 255, 0.9)',
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    borderRadius: 12,
-    zIndex: 10,
-  },
-  commandText: {
-    color: '#fff',
-    fontSize: 14,
-    textAlign: 'center',
-    fontStyle: 'italic',
-  },
-
-  // Error Banner
+  // Banners
   errorBanner: {
     position: 'absolute',
     top: 120,
@@ -742,57 +497,34 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 16,
     borderRadius: 12,
-    zIndex: 10,
+    zIndex: 20,
   },
   errorText: {
     color: '#fff',
     fontSize: 14,
     textAlign: 'center',
   },
-
-  // Results Overlay
-  resultsOverlay: {
+  speechBanner: {
     position: 'absolute',
-    bottom: 200,
+    top: 120,
     left: 24,
     right: 24,
-    backgroundColor: 'rgba(0,0,0,0.85)',
-    borderRadius: 16,
-    padding: 20,
-    zIndex: 10,
-  },
-  resultsText: {
-    color: '#fff',
-    fontSize: 18,
-    lineHeight: 26,
-    textAlign: 'center',
-  },
-
-  // Listening Overlay
-  listeningOverlay: {
-    position: 'absolute',
-    top: '40%',
-    left: 24,
-    right: 24,
-    backgroundColor: 'rgba(255, 59, 48, 0.95)',
-    borderRadius: 20,
-    padding: 30,
+    backgroundColor: 'rgba(0, 0, 0, 0.85)',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    zIndex: 15,
+    flexDirection: 'row',
     alignItems: 'center',
-    zIndex: 20,
+    gap: 10,
   },
-  listeningIcon: {
-    fontSize: 48,
-    marginBottom: 12,
+  speechIcon: {
+    fontSize: 20,
   },
-  listeningText: {
+  speechText: {
     color: '#fff',
-    fontSize: 24,
-    fontWeight: '600',
-    marginBottom: 8,
-  },
-  listeningHint: {
-    color: 'rgba(255,255,255,0.7)',
     fontSize: 14,
+    flex: 1,
   },
 
   // Verification Modal
@@ -841,13 +573,13 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
   },
-  startNavButton: {
+  confirmButton: {
     backgroundColor: 'rgba(52, 199, 89, 0.9)',
     paddingVertical: 14,
     paddingHorizontal: 24,
     borderRadius: 25,
   },
-  startNavButtonText: {
+  confirmButtonText: {
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
@@ -867,43 +599,9 @@ const styles = StyleSheet.create({
   },
   loadingText: {
     color: '#fff',
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: '600',
     marginTop: 20,
-  },
-
-  // Navigate Button Row
-  navButtonRow: {
-    position: 'absolute',
-    bottom: 130,
-    left: 0,
-    right: 0,
-    flexDirection: 'row',
-    justifyContent: 'center',
-    zIndex: 10,
-  },
-  navButton: {
-    backgroundColor: 'rgba(0, 122, 255, 0.9)',
-    paddingVertical: 14,
-    paddingHorizontal: 28,
-    borderRadius: 25,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  navButtonListening: {
-    backgroundColor: 'rgba(255, 59, 48, 0.9)',
-  },
-  navButtonActive: {
-    backgroundColor: 'rgba(52, 199, 89, 0.9)',
-  },
-  navButtonIcon: {
-    fontSize: 20,
-  },
-  navButtonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
   },
 
   // Navigation Steps Panel
@@ -912,7 +610,7 @@ const styles = StyleSheet.create({
     top: 170,
     left: 16,
     right: 16,
-    maxHeight: '45%',
+    maxHeight: '50%',
     backgroundColor: 'rgba(0, 0, 0, 0.92)',
     borderRadius: 16,
     borderWidth: 1,
@@ -920,9 +618,6 @@ const styles = StyleSheet.create({
     zIndex: 15,
   },
   navStepsHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
     padding: 14,
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255, 255, 255, 0.1)',
@@ -932,84 +627,133 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
   },
-  navStepsClose: {
-    color: '#fff',
-    fontSize: 20,
-    padding: 4,
-  },
   navStepsScroll: {
-    maxHeight: 300,
+    maxHeight: 250,
   },
-  navStepsText: {
+  stepItem: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    gap: 12,
+  },
+  stepItemCurrent: {
+    backgroundColor: 'rgba(0, 122, 255, 0.3)',
+  },
+  stepItemCompleted: {
+    opacity: 0.5,
+  },
+  stepNumber: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
     color: '#fff',
-    fontSize: 15,
+    fontSize: 12,
+    fontWeight: '600',
+    textAlign: 'center',
+    lineHeight: 24,
+  },
+  stepNumberCurrent: {
+    backgroundColor: 'rgba(0, 122, 255, 0.8)',
+  },
+  stepText: {
+    color: '#fff',
+    fontSize: 14,
+    flex: 1,
+    lineHeight: 20,
+  },
+  stepTextCurrent: {
+    fontWeight: '600',
+  },
+  stepTextCompleted: {
+    textDecorationLine: 'line-through',
+  },
+
+  // Vision Overlay
+  visionOverlay: {
+    position: 'absolute',
+    bottom: 200,
+    left: 24,
+    right: 24,
+    backgroundColor: 'rgba(0, 0, 0, 0.85)',
+    borderRadius: 16,
+    padding: 16,
+    zIndex: 10,
+  },
+  visionText: {
+    color: '#fff',
+    fontSize: 16,
     lineHeight: 22,
-    padding: 14,
+    textAlign: 'center',
+  },
+
+  // Progress Bar
+  progressContainer: {
+    position: 'absolute',
+    bottom: 140,
+    left: 24,
+    right: 24,
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  progressBar: {
+    width: '100%',
+    height: 6,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    borderRadius: 3,
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: '100%',
+    backgroundColor: '#34C759',
+    borderRadius: 3,
+  },
+  progressText: {
+    color: '#fff',
+    fontSize: 12,
+    marginTop: 6,
+    opacity: 0.7,
   },
 
   // Bottom Controls
-  controls: {
+  bottomControls: {
     position: 'absolute',
     bottom: 50,
     left: 0,
     right: 0,
     flexDirection: 'row',
     justifyContent: 'center',
-    alignItems: 'center',
-    gap: 24,
     paddingHorizontal: 24,
     zIndex: 10,
   },
-  mainButton: {
-    backgroundColor: '#fff',
-    width: 140,
-    height: 56,
-    borderRadius: 28,
-    justifyContent: 'center',
+  navButton: {
+    backgroundColor: 'rgba(0, 122, 255, 0.9)',
+    paddingVertical: 16,
+    paddingHorizontal: 32,
+    borderRadius: 30,
+    flexDirection: 'row',
     alignItems: 'center',
+    gap: 10,
+    minWidth: 180,
+    justifyContent: 'center',
   },
-  stopButton: {
-    backgroundColor: '#ff3b30',
+  navButtonListening: {
+    backgroundColor: 'rgba(255, 59, 48, 0.9)',
   },
-  loadingButton: {
-    backgroundColor: '#666',
+  navButtonActive: {
+    backgroundColor: 'rgba(255, 59, 48, 0.9)',
   },
-  mainButtonText: {
-    color: '#000',
+  navButtonDisabled: {
+    backgroundColor: 'rgba(100, 100, 100, 0.9)',
+  },
+  navButtonIcon: {
     fontSize: 20,
-    fontWeight: '600',
-    letterSpacing: 1,
   },
-  stopButtonText: {
+  navButtonText: {
     color: '#fff',
-  },
-  speakButton: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  buttonDisabled: {
-    opacity: 0.3,
-  },
-  speakIcon: {
-    fontSize: 24,
-  },
-  micButton: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  micButtonActive: {
-    backgroundColor: 'rgba(255, 59, 48, 0.8)',
-  },
-  micIcon: {
-    fontSize: 24,
+    fontSize: 18,
+    fontWeight: '600',
   },
 });
 

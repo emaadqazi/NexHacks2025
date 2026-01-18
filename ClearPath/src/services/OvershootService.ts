@@ -109,7 +109,7 @@ export class OvershootService {
 
     this.onResultCallback = onResult;
 
-    // Simple navigation prompt
+    // Focused real-time navigation prompt for visually impaired users
     const defaultPrompt = prompt || `You are a navigation assistant for a visually impaired person.
     Give brief, clear directions in 1-2 sentences max. Focus on:
     - Obstacles or hazards ahead. For these, give specifically a WARNING message: Object head. Keep simple.
